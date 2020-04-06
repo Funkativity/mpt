@@ -45,12 +45,12 @@ foreach (nn KDTreeBatch GNAT)
             
             set(trgt nao_cup_planning-${nn}-${scalar}-${mtname})
             add_executable(${trgt} nao_cup_planning.cpp)
-            target_compile_definitions(${trgt} PRIVATE NN_TYPE=${nn} SCALAR_TYPE=${scalar} MT=1)
+            target_compile_definitions(${trgt} PRIVATE NN_TYPE=${nn} SCALAR_TYPE=${scalar} MT=mt)
             target_link_libraries(${trgt} Eigen3::Eigen)
 
             set(trgt se3_rigid_body_planning-${nn}-${scalar}-${mtname})
             add_executable(${trgt} se3_rigid_body_planning.cpp)
-            target_compile_definitions(${trgt} PRIVATE NN_TYPE=${nn} SCALAR_TYPE=${scalar} MT=1)
+            target_compile_definitions(${trgt} PRIVATE NN_TYPE=${nn} SCALAR_TYPE=${scalar} MT=mt)
             target_link_libraries(${trgt} Eigen3::Eigen ${ASSIMP_LIBRARIES} ${FCL_LIBRARIES} ${CCD_LIBRARIES})
 
 	endforeach(mt)

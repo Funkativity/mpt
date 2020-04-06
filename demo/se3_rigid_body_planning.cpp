@@ -176,12 +176,12 @@ void runPlanner(
     planner.addStart(qStart);
 
     // TODO: only do this for Algorithms that have setRange
-    if (config.hasProp("planner", "rrt.range")) {
-        Scalar range;
-        config.load(range, "planner", "rrt.range");
-        MPT_LOG(INFO) << "setting range: " << range;
-        planner.setRange(range);
-    }
+    // if (config.hasProp("planner", "rrt.range")) {
+    //     Scalar range;
+    //     config.load(range, "planner", "rrt.range");
+    //     MPT_LOG(INFO) << "setting range: " << range;
+    //     planner.setRange(range);
+    // }
 
     Clock::time_point start;
     if (options.solveTimeMillis_ > 0) {
@@ -275,15 +275,16 @@ void solve(const Options& options, const mpt_demo::ScenarioConfig<>& config) {
     static constexpr bool reportStats = true;
 
     std::vector<std::string> robotMeshes{{robotMesh}};
-    if (options.algorithm_ == kRRTStarAlgorithm) {
-        using Algorithm = PRRTStar<report_stats<reportStats>, NN, Threads>;
+    // if (options.algorithm_ == kRRTStarAlgorithm) {
+    //     using Algorithm = PRRTStar<report_stats<reportStats>, NN, Threads>;
+    //     runPlanner<Scenario, Algorithm>(options, config, envMesh, robotMeshes, qStart, qGoal, volumeMin, volumeMax);
+    // } else if (options.algorithm_ == kRRTAlgorithm) {
+    //     using Algorithm = PRRT<report_stats<reportStats>, NN, Threads>;
+    //     runPlanner<Scenario, Algorithm>(options, config, envMesh, robotMeshes, qStart, qGoal, volumeMin, volumeMax);
+    // } else if (options.algorithm_ == kPRMAlgorithm) {
+    if (options.algorithm_ == kPRMAlgorithm) {
+        using Algorithm = PPRM<report_stats<true>, NN, Threads>;
         runPlanner<Scenario, Algorithm>(options, config, envMesh, robotMeshes, qStart, qGoal, volumeMin, volumeMax);
-    } else if (options.algorithm_ == kRRTAlgorithm) {
-        using Algorithm = PRRT<report_stats<reportStats>, NN, Threads>;
-        runPlanner<Scenario, Algorithm>(options, config, envMesh, robotMeshes, qStart, qGoal, volumeMin, volumeMax);
-    } else if (options.algorithm_ == kPRMAlgorithm) {
-        // using Algorithm = PPRM<report_stats<true>, NN, Threads>;
-        // runPlanner<Scenario, Algorithm>(options, config, envMesh, robotMeshes, qStart, qGoal, volumeMin, volumeMax);
     }
 }
 

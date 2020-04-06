@@ -45,8 +45,8 @@
 #include <chrono>
 
 // To compile:
-// cd ~/projects/mpt/demo ; clang++ -fopenmp -std=c++17 -I../src -I../../nigh/src -I/usr/local/include -I/usr/include/eigen3 -o se3_rigid_body_planning se3_rigid_body_planning.cpp -lfcl -lassimp
-
+// cd ~/projects/mpt/demo ; clang++-9 -std=c++17 -x cuda --cuda-path=/usr/local/cuda-9.2/ -I../src -I/usr/include/assimp -I../../nigh/src -I/usr/include/fcl -I/usr/local/include/eigen3 -o cuda_se3_rigid_body_planning cuda_se3_rigid_body_planning.cu -lfcl -lassimp --cuda-gpu-arch=sm_61 -lccd -lpthread
+// clang++-9 -std=c++17 -x cuda --cuda-path=/usr/local/cuda-9.2/ -I../src -I/usr/include/assimp -I../../nigh/src -I/usr/include/fcl -I/usr/local/include/eigen3 -o cuda_se3_rigid_body_planning cuda_se3_rigid_body_planning.cu -lfcl -lassimp --cuda-gpu-arch=sm_61 -lccd -lpthread -O3 -D MT=0 -D NN_TYPE=KDTreeBatch -D SCALAR_TYPE=float
 // namespace mpt_demo {
 //     template <typename Planner, typename Scenario, typename ... Args>
 //     void solve(const Scenario& scenario, Args&& args) {
@@ -269,11 +269,11 @@ void solve(const Options& options, const mpt_demo::ScenarioConfig<>& config) {
 
     using NN = NN_TYPE<>;
 
-#if MT
-    using Threads = hardware_concurrency;
-#else
+// #if MT
+    // using Threads = hardware_concurrency;
+// #else
     using Threads = single_threaded;
-#endif
+// #endif
 
     static constexpr bool reportStats = true;
 
