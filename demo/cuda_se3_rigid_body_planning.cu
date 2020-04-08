@@ -46,14 +46,7 @@
 
 // To compile:
 // cd ~/projects/mpt/demo ; clang++-9 -std=c++17 -x cuda --cuda-path=/usr/local/cuda-9.2/ -I../src -I/usr/include/assimp -I../../nigh/src -I/usr/include/fcl -I/usr/local/include/eigen3 -o cuda_se3_rigid_body_planning cuda_se3_rigid_body_planning.cu -lfcl -lassimp --cuda-gpu-arch=sm_61 -lccd -lpthread
-// clang++-9 -std=c++17 -x cuda --cuda-path=/usr/local/cuda-9.2/ -I../src -I/usr/include/assimp -I../../nigh/src -I/usr/include/fcl -I/usr/local/include/eigen3 -o cuda_se3_rigid_body_planning cuda_se3_rigid_body_planning.cu -lfcl -lassimp --cuda-gpu-arch=sm_61 -lccd -lpthread -O3 -D MT=0 -D NN_TYPE=KDTreeBatch -D SCALAR_TYPE=float
-// namespace mpt_demo {
-//     template <typename Planner, typename Scenario, typename ... Args>
-//     void solve(const Scenario& scenario, Args&& args) {
-//         Planner planner(scenario, std::forward<Args>(args)...);
-//         planner.solve(2000ms);
-//     }
-// }
+// clang++-9 -std=c++17 -x cuda --cuda-path=/usr/local/cuda-9.2/ -I../src -I/usr/include/assimp -I../../nigh/src -I/usr/include/fcl -I/usr/local/include/eigen3 -o cuda_se3_rigid_body_planning cuda_se3_rigid_body_planning.cu -lfcl -lassimp --cuda-gpu-arch=sm_61 -lccd -lpthread -L/usr/local/cuda/lib64 -lcudart -O3 -D MT=0 -D NN_TYPE=KDTreeBatch -D SCALAR_TYPE=float
 
 enum PlanningAlgorithm {
     kRRTStarAlgorithm,

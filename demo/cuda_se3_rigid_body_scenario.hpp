@@ -39,8 +39,8 @@
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
-#include <fcl/geometry/bvh/BVH_model.h>
-#include <fcl/narrowphase/collision.h>
+// #include <fcl/geometry/bvh/BVH_model.h>
+// #include <fcl/narrowphase/collision.h>
 #include <functional>
 #include <memory>
 #include <mpt/discrete_motion_validator.hpp>
@@ -50,12 +50,14 @@
 #include <mpt/uniform_sampler.hpp>
 #include <nigh/kdtree_batch.hpp>
 
+#include <cuda.h>
 
 #define BATCH_SIZE 32
 #define NN_TYPE KDTreeBatch
 #define SCALAR_TYPE float
 namespace mpt_demo::impl {
     static constexpr std::intmax_t SO3_WEIGHT = 50;
+    using Vec3 = Eigen::Matrix<float, 3, 1>;
 
     // silence the warnings "taking address of packed member 'a1' of
     // class or structure 'aiMatrix4x4t<float>' may result in an
@@ -63,6 +65,7 @@ namespace mpt_demo::impl {
     // unaligned structures will not happen.
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+
     template <typename Scalar>
     auto mapToEigen(const aiMatrix4x4t<Scalar>& m) {
         using EigenType = const Eigen::Matrix<Scalar, 4, 4, Eigen::RowMajor>;
@@ -104,7 +107,6 @@ namespace mpt_demo::impl {
         Fn&& visitor)
     {
         std::size_t count = 0;
-        using Vec3 = Eigen::Matrix<Scalar, 3, 1>;
 
         transform *= mapToEigen(node->mTransformation).template cast<Scalar>();
         for (unsigned i=0 ; i<node->mNumMeshes ; ++i) {
@@ -137,24 +139,36 @@ namespace mpt_demo::impl {
         return count;
     }
 
-    // static auto sceneBounds(const aiScene* scene, double scale = 0, double inc = 0) {
-    //     Eigen::Matrix<double, 3, 2> bounds;
-    //     bounds.col(0).fill(std::numeric_limits<double>::infinity());
-    //     bounds.col(1).fill(-std::numeric_limits<double>::infinity());
-    //     visitVertices(scene, [&] (const Vec3& v) {
-    //         // TODO: convert v to eigen
-    //         bounds.col(0) = bounds.col(0).cwiseMin(v);
-    //         bounds.col(1) = boudns.col(1).cwiseMax(v);
-    //     });
 
-    //     scale -= 1;
-    //     assert(scale >= 0);
-    //     assert(inc >= 0);
-    //     Eigen::Matrix<double, 3, 1> growth = (bounds.col(1) - bounds.col(0)) * scale + inc;
-    //     bounds.col(0) = bounds.col(0) - growth;
-    //     bounds.col(1) = bounds.col(1) + growth;
-    //     return bounds;
-    // }
+
+    // Triangle class encapsulates coordinates of vertices, instead of storing
+    // vertex indices and then looking them up in an array.
+    // Having local copies of vertex coordinates is less space effecient, but
+    // reduces number of accesses to standard memory. It also creates more total
+    // work to do, since now transformations need to be done multiple times for
+    // each vertex, but since the transformations will be parallelized,  we believe
+    // this trade off will be negligible in terms of time saved accessing memory.
+    template <typename Scalar>
+    class Triangle {
+        using Vec3 = Eigen::Matrix<Scalar, 3, 1>;
+
+    public:
+        // coordinates of triangle vertices
+        Vec3 A;
+        Vec3 B;
+        Vec3 C;
+
+        Triangle() {}
+
+        Triangle(Vec3 vertex_a, Vec3 vertex_b, Vec3 vertex_c):
+            A(vertex_a),
+            B(vertex_b),
+            C(vertex_c) {}
+
+
+    };
+
+
 
     template <typename Scalar>
     class Mesh {
@@ -162,9 +176,11 @@ namespace mpt_demo::impl {
         using Transform = Eigen::Transform<Scalar, 3, Eigen::Affine>;
 
         std::string name_;
-        fcl::BVHModel<fcl::OBBRSS<Scalar>> model_;
 
     public:
+        std::vector<Triangle<Scalar>> host_triangles_; // RAM copy of triangles
+        Triangle<Scalar> *d_triangles_; //pointer to GPU copy of triangles for a mesh
+
         Mesh(const std::string& name, bool shiftToCenter)
             : name_(name)
         {
@@ -189,41 +205,31 @@ namespace mpt_demo::impl {
                 Transform::Identity(),
                 [&] (const Vec3& v) { center += v; });
             center /= nVertices;
-            // TODO: scene::inferBounds(bounds, vertices, factor_, add_);
 
             Transform rootTransform = Transform::Identity();
 
             if (shiftToCenter)
                 rootTransform *= Eigen::Translation<Scalar, 3>(-center);
 
-            model_.beginModel();
+            host_triangles_.reserve(nVertices); // could be an unhelpful optimization, but worth a try!
             std::size_t nTris = visitTriangles(
                 scene,
                 scene->mRootNode,
                 rootTransform,
                 [&] (const Vec3& a, const Vec3& b, const Vec3& c) {
-                    model_.addTriangle(a, b, c);
+                    host_triangles_.emplace_back(a, b, c);
                 });
-            model_.endModel();
-            model_.computeLocalAABB();
+
+            cudaMalloc((void **) &d_triangles_, sizeof(Triangle<Scalar>) * host_triangles_.size());
+
+            cudaMemcpy(d_triangles_, &host_triangles_[0], host_triangles_.size() * sizeof(Triangle<Scalar>), cudaMemcpyHostToDevice);
+            cudaDeviceSynchronize(); // consider not having cudaDeviceSynchronize here, instead maybe call it at the start of valid.
 
             MPT_LOG(INFO) << "Loaded mesh '" << name << "' (" << nVertices << " vertices, " << nTris
                           << " triangles, center=" << center << ")";
         }
 
-        const auto& minBounds() const {
-            return model_.aabb_local.min_;
-        }
 
-        const auto& maxBounds() const {
-            return model_.aabb_local.max_;
-        }
-
-        auto extents() const {
-            return (maxBounds() - minBounds()).norm() + Scalar(impl::SO3_WEIGHT*M_PI/2);
-        }
-
-        const fcl::CollisionGeometry<Scalar>* geom() const { return &model_; }
     };
 
     template <auto>
@@ -241,8 +247,181 @@ namespace mpt_demo::impl {
     };
 }
 
+
+
 namespace mpt_demo {
     using namespace unc::robotics;
+    using Vec3 = Eigen::Matrix<float, 3, 1>;
+
+
+    // CUDA helper functions
+    //////////////////////////////////////////////////////////////////////////////////
+    // returns the t1 value as seen in equation (4) in the cited paper
+    __device__ float getParam(float p0, float p1, float d0, float d1){
+        return (p0 + (p1 - p0) * (d0) / (d0 - d1));
+    }
+
+    __global__ void detect_collision(
+            impl::Triangle<float> *obstacles, size_t obs_size,
+            impl::Triangle<float> *robot, size_t rob_size,
+            bool *collisions){
+
+        // want some tolerance when comparing to 0 to account for float errors
+        float threshold = 0.00001f;
+
+        int idx = threadIdx.x + blockIdx.x * blockDim.x;
+
+        // edge case where thread doesn't matter
+        if (idx >= obs_size){
+            return;
+        }
+
+        impl::Triangle<float> obs = obstacles[idx];
+
+        // calculate normal for our obstacle triangle
+        ////////////////////////////////////////////////////////////////////////
+
+        Vec3 obs_vec1 = obs.B - obs.A;
+        Vec3 obs_vec2 = obs.C - obs.A;
+
+
+        Vec3 obs_norm = obs_vec1.cross(obs_vec2);
+
+        // scalar that satisfies obs_norm * X + obs_d = 0dot
+        float obs_d = -1 * obs_norm.dot(obs.A);
+
+
+        //test for intersection against all robot triangles
+        ////////////////////////////////////////////////////////////////////////
+        impl::Triangle<float> *rob;
+        bool has_collision = false;
+        for (int i = 0; i < rob_size; i++){
+            rob = &robot[i];
+            float3 obs_planar_distances;
+
+            // note: x, y, and z represent which the distances
+            // from the triangle to the obstacle plane, not coordinates
+            obs_planar_distances.x = obs_norm.dot(rob->A) + obs_d;
+            obs_planar_distances.y = obs_norm.dot(rob->B) + obs_d;
+            obs_planar_distances.z = obs_norm.dot(rob->C) + obs_d;
+
+            // coplanar case
+            if (abs(obs_planar_distances.x + obs_planar_distances.y + obs_planar_distances.z) < 0.0001f) {
+                //TODO, also refactor code so this can appear later
+            }
+
+            // may want to change 0 to some small threshhold above 0 to allow for coplanar case
+            if ((obs_planar_distances.x > 0 && obs_planar_distances.y > 0 && obs_planar_distances.z > 0)
+                    || (obs_planar_distances.x < 0 && obs_planar_distances.y < 0 && obs_planar_distances.z < 0)){
+                continue;
+            }
+
+            ///////////////////////////////////////////////////////////////////////////////////
+            // calculate the projection of the obstacle triangle against the robot triangle now
+            Vec3 rob_vec1 = obs.B - obs.A;
+            Vec3 rob_vec2 = obs.C - obs.A;
+            Vec3 rob_norm = rob_vec1.cross(rob_vec2);
+
+            // scalar that satisfies obs_norm * X + obs_d = 0
+            float rob_d = -1 * rob_norm.dot(rob->A);
+
+            float3 rob_planar_distances;
+            rob_planar_distances.x = rob_norm.dot(obs.A) + rob_d;
+            rob_planar_distances.y = rob_norm.dot(obs.B) + rob_d;
+            rob_planar_distances.z = rob_norm.dot(obs.C) + rob_d;
+
+            if ((rob_planar_distances.x > threshold && rob_planar_distances.y > threshold && rob_planar_distances.z > threshold)
+                    || (rob_planar_distances.x < -threshold && rob_planar_distances.y < -threshold && rob_planar_distances.z < -threshold)){
+                continue;
+            }
+            ///////////////////////////////////////////////////////////////////////////////////
+
+            // this is the direction of the line created by the intersection of the planes
+            // of both triangles
+            Vec3 direction = rob_norm.cross(obs_norm);
+
+            // get points of obs intersecting line and corresponding planar distance
+            float obs_intersect1, obs_intersect2;
+            float obs_distance1, obs_distance2;
+            if (rob_planar_distances.x > 0){
+                if (rob_planar_distances.y > 0){
+                    obs_intersect1 = direction.dot(obs.A);
+                    obs_intersect2 = direction.dot(obs.B);
+                    obs_distance1 = rob_planar_distances.x;
+                    obs_distance2 = rob_planar_distances.y;
+                } else {
+                    obs_intersect1 = direction.dot(obs.A);
+                    obs_intersect2 = direction.dot(obs.C);
+                    obs_distance1 = rob_planar_distances.x;
+                    obs_distance2 = rob_planar_distances.z;
+                }
+            } else {
+                obs_intersect1 = direction.dot(obs.B);
+                obs_intersect2 = direction.dot(obs.C);
+                obs_distance1 = rob_planar_distances.y;
+                obs_distance2 = rob_planar_distances.z;
+            }
+
+            // get points of rob intersecting line
+            float rob_intersect1, rob_intersect2;
+            float rob_distance1, rob_distance2;
+            if (obs_planar_distances.x > 0){
+                if (obs_planar_distances.y > 0){
+                    rob_intersect1 = direction.dot(rob->A);
+                    rob_intersect2 = direction.dot(rob->B);
+                    rob_distance1 = obs_planar_distances.x;
+                    rob_distance2 = obs_planar_distances.y;
+                } else {
+                    rob_intersect1 = direction.dot(rob->A);
+                    rob_intersect2 = direction.dot(rob->C);
+                    rob_distance1 = obs_planar_distances.x;
+                    rob_distance2 = obs_planar_distances.z;
+                }
+            } else {
+                rob_intersect1 = direction.dot(rob->B);
+                rob_intersect2 = direction.dot(rob->C);
+                rob_distance1 = obs_planar_distances.y;
+                rob_distance2 = obs_planar_distances.z;
+            }
+
+            // should probably refactor these above if statements so that this is a part of it
+            // get parameters such that intersection = obs_paramx * D
+            float obs_param1 = getParam(    obs_intersect1, obs_intersect2,
+                                            obs_distance1, obs_distance2);
+
+            float obs_param2 = getParam(    obs_intersect2, obs_intersect1,
+                                            obs_distance2, obs_distance1);
+
+            float rob_param1 = getParam(    rob_intersect1, rob_intersect2,
+                                            rob_distance1, rob_distance2);
+
+            float rob_param2 = getParam(    rob_intersect2, rob_intersect1,
+                                            rob_distance2, rob_distance1);
+
+            // swap so that 1 is smaller
+            if (obs_param1 > obs_param2) {
+                float tmp = obs_param2;
+                obs_param2 = obs_param1;
+                obs_param1 = tmp;
+            }
+            if (rob_param1 > rob_param2) {
+                float tmp = rob_param2;
+                rob_param2 = rob_param1;
+                rob_param1 = tmp;
+            }
+
+            if ( (obs_param2 < rob_param1) || obs_param1 > rob_param1) {
+                continue; // no collision
+            } else {
+                has_collision = true;
+                break;
+            }
+
+        }
+
+        collisions[idx] = has_collision;
+    }
+
 
     template <typename Scalar, int nParts = 1, bool selfCollision = false>
     class SE3RigidBodyScenario {
@@ -269,7 +448,7 @@ namespace mpt_demo {
         // Eigen::AffineCompact.  Isometry seems like a better option,
         // so it seems unlikely to change, but regardless, we use
         // fcl's alias for it instead of directly using Eigen's type.
-        using Transform = fcl::Transform3<Scalar>;
+        using Transform = Eigen::Transform<Scalar, 3, Eigen::Isometry>;
 
         // The meshes are immutable and can be rather large.  Since
         // scenarios are copied to each thread, we use a shared
@@ -289,53 +468,73 @@ namespace mpt_demo {
         }
 
     public:
+
         // the collision detection function
         // is called in prrt.hpp or pprm.hpp or whatever algorithm this is compiled to use
         bool valid(const Config& q) const {
-            fcl::CollisionRequest<Scalar> req;
-            fcl::CollisionResult<Scalar> res;
 
-            for (const auto& robot : *robot_) {
-                // for (std::size_t i=0 ; i<robot_->size() ; ++i) {
-                Transform tf = stateToTransform(q); // TODO: get the ith state
-                if (fcl::collide(robot.geom(), tf, environment_->geom(), Transform::Identity(), req, res))
-                    return false;
+            int num_env_triangles = environment_->host_triangles_.size();
+
+            if (robot_->size() > 1){
+                throw new std::runtime_error("Only single robots supported");
+            }
+            size_t num_rob_triangles = (*robot_)[0].host_triangles_.size();
+
+            Transform tf = stateToTransform(q);
+
+            // array of booleans, d_collisions[i] = true -> environment_.triangle[i] is
+            bool host_collisions[num_env_triangles];
+            bool *d_collisions;
+            cudaMalloc((void **) &d_collisions, sizeof(bool) * num_env_triangles);
+
+            size_t block_size = 256;
+            size_t numBlocks = num_env_triangles / block_size +1;
+
+
+            cudaDeviceSynchronize();
+            detect_collision<<< numBlocks, 256>>>(  environment_->d_triangles_, num_env_triangles,
+                                                    (*robot_)[0].d_triangles_, num_rob_triangles,
+                                                    d_collisions);
+            cudaDeviceSynchronize();
+
+            cudaMemcpy(host_collisions, d_collisions, num_env_triangles * sizeof(bool), cudaMemcpyDeviceToHost);
+            cudaDeviceSynchronize();
+
+            bool isValid = true;
+            for (int i = 0; i <num_env_triangles; i ++){
+                isValid = isValid && !host_collisions[i];
             }
 
-            // TODO: when multibody is supported
-            // if (selfCollision) {
-            //     for (std::size_t i=0 ; i<robot_.size() ; ++i) {
-            //         Transform tfi = stateToTransform(q);
-            //         for (std::size_t j=i ; ++j<robot_.size() ; ) {
-            //             Transform tfj = stateToTransform(q);
-            //             if (fcl::collide(robot_[i], tfi, robot_[j], tfj, req, res) > 0)
-            //                 return false;
-            //         }
-            //     }
-            // }
+            return isValid;
 
-            return true;
+
+            // TODO - write to a single global flag instead of an array of collisions
+            // TODO - have each CUDA thread check a single triangle triangle, instead of
+            //        all triangles in a robot
+            // TODO - check the collisions in a loop instead of using cudaDeviceSynchronize, continuing
+            //        whenever we've determined there's a collision0\
+            // TODO - initialize vector of bools in construction of scenario, to avoid excessive calls
+            //        to cudaMalloc and CUDA free
+            // TODO - precompute norms for environment / robot, transform as necessary.
         }
 
-        // TODO make this use use some cuda algorithm
-        std::vector<bool> validGPU(const std::vector<Config> qs) const {
-            std::vector<Transform> tfs[robot_->size()];
-            std::vector<bool> collisions[robot_->size()];
-            for (size_t i = 0; i < robot_->size(); i++) {
-                
-                // consider doing the "state to transform" within the gpu
-                // could calculate the transform on cpu for one robot point, send a batch, calculate the next transform, send another batch, etc
-                // ^ that's a good idea, i like it. 
-                Transform tf = stateToTransform(qs[i]);
-                // robot is a Mesh type, robot.geom() gets the underlying BVHModel, which is a mesh with some extra info
-                // access array of vertices by bvhmodel.vertices, and the triangles (contaiining vertex indices) by bvhmodel.triangles
-                // if (fcl::collide(robot_[i].geom(), tf, environment_->geom(), Transform::Identity(), req, res))
-                //     return false;
+        // // TODO make this use use some cuda algorithm
+        // std::vector<bool> validBatch(const std::vector<Config> qs) const {
+        //     std::vector<Transform> tfs[robot_->size()];
+        //     std::vector<bool> collisions[robot_->size()];
 
-            }
-            
-            return collisions;
-        }
+        //     for (const auto& q : qs) {
+        //         for (const auto& robot : *robot_) {
+        //             for (size_t j = 0)
+        //             // consider doing the "state to transform" within the gpu
+        //             // could calculate the transform on cpu for one robot point, send a batch, calculate the next transform, send another batch, etc
+        //             // ^ that's a good idea, i like it.
+        //             Transform tf = stateToTransform(q);
+        //         }
+        //     }
+
+        //     return collisions;
+        // }
 
 
     private:
@@ -360,13 +559,9 @@ namespace mpt_demo {
             , link_(space_, ((max - min).norm() + Scalar(impl::SO3_WEIGHT*M_PI/2))*checkResolution, Validator(*this))
         {
             robot_->reserve(robotMeshes.size());
-            for (const std::string& mesh : robotMeshes)
+            for (const std::string& mesh : robotMeshes) {
                 robot_->emplace_back(mesh, true);
-
-            #ifdef GPU_ACCELERATION
-                // load the robot mesh onto the device
-                // load envmesh onto the device
-            #endif
+            }
             MPT_LOG(DEBUG) << "Volume min: " << min.transpose();
             MPT_LOG(DEBUG) << "Volume max: " << max.transpose();
         }
@@ -378,11 +573,6 @@ namespace mpt_demo {
         const Bounds& bounds() const {
             return bounds_;
         }
-
-        // template <typename RNG>
-        // std::optional<State> sample(RNG& rng) {
-        //     return {};
-        // }
 
         const Goal& goal() const {
             return goal_;
