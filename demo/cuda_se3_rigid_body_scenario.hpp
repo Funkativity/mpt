@@ -160,7 +160,7 @@ namespace mpt_demo::impl {
 
         Triangle() {}
 
-        Triangle(Vec3 vertex_a, Vec3 vertex_b, Vec3 vertex_c):
+        __host__ __device__ Triangle(Vec3 vertex_a, Vec3 vertex_b, Vec3 vertex_c):
             A(vertex_a),
             B(vertex_b),
             C(vertex_c) {}
@@ -222,7 +222,7 @@ namespace mpt_demo::impl {
 
             cudaMalloc((void **) &d_triangles_, sizeof(Triangle<Scalar>) * host_triangles_.size());
 
-            cudaMemcpy(d_triangles_, &host_triangles_[0], host_triangles_.size() * sizeof(Triangle<Scalar>), cudaMemcpyHostToDevice);
+            cudaMemcpy(d_triangles_, &host_triangles_[0], host_triangles_.size() * sizeof(Triangle<float>), cudaMemcpyHostToDevice);
             cudaDeviceSynchronize(); // consider not having cudaDeviceSynchronize here, instead maybe call it at the start of valid.
 
             MPT_LOG(INFO) << "Loaded mesh '" << name << "' (" << nVertices << " vertices, " << nTris
@@ -256,6 +256,51 @@ namespace mpt_demo {
 
     // CUDA helper functions
     //////////////////////////////////////////////////////////////////////////////////
+
+
+    __device__ inline float det_2d(float2 &p1, float2 &p2, float2 &p3) {
+        return  p1.x*(p2.y-p3.y)
+                +p2.x*(p3.y-p1.y)
+                +p3.x*(p1.y-p2.y);
+    }
+
+    // swaps the vertices of a 2d triangle so that they're in the order
+    // needed for the 2d_triangle_intersect test
+    __device__  void CheckTriWinding(float2 &p1, float2 &p2, float2 &p3){
+        float detTri = det_2d(p1, p2, p3);
+        if(detTri < 0.0)
+        {
+            float2 a = p3;
+            p3 = p2;
+            p2 = a;
+        }
+    }
+
+
+
+    __device__ inline float getTriAreaSquared(float2 a, float2 b, float2 c){
+        float a_len_squared =   (b.x - c.x) * (b.x - c.x) + 
+                                (b.y - c.y) * (b.y - c.y); 
+
+        float b_len_squared =   (a.x - c.x) * (a.x - c.x) + 
+                                (a.y - c.y) * (a.y - c.y); 
+
+        float c_len_squared =   (a.x - b.x) * (a.x - b.x) + 
+                                (a.y - b.y) * (a.y - b.y); 
+        
+        float semi_perimeter = (a_len_squared + b_len_squared + c_len_squared) / 2.0f;
+
+        return semi_perimeter * (semi_perimeter - a_len_squared)
+                              * (semi_perimeter - b_len_squared)
+                              * (semi_perimeter - c_len_squared);
+    }
+
+
+
+    __device__ inline bool edge_intersection(float2 &p1, float2 &p2, float2 &p3, double eps){
+        return det_2d(p1, p2, p3) < eps;
+    }
+
     // returns the t1 value as seen in equation (4) in the cited paper
     __device__ float getParam(float p0, float p1, float d0, float d1){
         return (p0 + (p1 - p0) * (d0) / (d0 - d1));
@@ -264,7 +309,7 @@ namespace mpt_demo {
     __global__ void detect_collision(
             impl::Triangle<float> *obstacles, size_t obs_size,
             impl::Triangle<float> *robot, size_t rob_size,
-            bool *collisions){
+            bool *collisions, Eigen::Transform<float, 3, Eigen::Isometry> tf){
 
         // want some tolerance when comparing to 0 to account for float errors
         float threshold = 0.00001f;
@@ -275,7 +320,22 @@ namespace mpt_demo {
         if (idx >= obs_size){
             return;
         }
-
+        if (idx == 0){
+            // printf("There are %d obstacle triangles", obs_size );
+            // for (int i = 0; i < obs_size; i++){
+            //     printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
+            //                         obstacles[i].A[0], obstacles[i].A[1], obstacles[i].A[2],
+            //                         obstacles[i].B[0], obstacles[i].B[1], obstacles[i].B[2],
+            //                         obstacles[i].C[0], obstacles[i].C[1], obstacles[i].C[2]);
+            // }
+            printf("There are %d robot triangles", rob_size );
+            // for (int i = 0; i < rob_size; i++){
+            //     printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
+            //                         robot[i].A[0], robot[i].A[1], robot[i].A[2],
+            //                         robot[i].B[0], robot[i].B[1], robot[i].B[2],
+            //                         robot[i].C[0], robot[i].C[1], robot[i].C[2]);
+            // }
+        }
         impl::Triangle<float> obs = obstacles[idx];
 
         // calculate normal for our obstacle triangle
@@ -293,22 +353,133 @@ namespace mpt_demo {
 
         //test for intersection against all robot triangles
         ////////////////////////////////////////////////////////////////////////
-        impl::Triangle<float> *rob;
         bool has_collision = false;
         for (int i = 0; i < rob_size; i++){
-            rob = &robot[i];
+            impl::Triangle<float> pre_trans_rob = robot[i];
+            impl::Triangle<float> rob(  tf * pre_trans_rob.A, 
+                                        tf * pre_trans_rob.B,
+                                        tf * pre_trans_rob.C);
+            // if (idx == 0){
+            //     printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
+            //         robot[i].A[0], robot[i].A[1], robot[i].A[2],
+            //         robot[i].B[0], robot[i].B[1], robot[i].B[2],
+            //         robot[i].C[0], robot[i].C[1], robot[i].C[2]);
+            
+            // }
             float3 obs_planar_distances;
 
             // note: x, y, and z represent which the distances
             // from the triangle to the obstacle plane, not coordinates
-            obs_planar_distances.x = obs_norm.dot(rob->A) + obs_d;
-            obs_planar_distances.y = obs_norm.dot(rob->B) + obs_d;
-            obs_planar_distances.z = obs_norm.dot(rob->C) + obs_d;
+            obs_planar_distances.x = obs_norm.dot(rob.A) + obs_d;
+            obs_planar_distances.y = obs_norm.dot(rob.B) + obs_d;
+            obs_planar_distances.z = obs_norm.dot(rob.C) + obs_d;
 
             // coplanar case
-            if (abs(obs_planar_distances.x + obs_planar_distances.y + obs_planar_distances.z) < 0.0001f) {
-                //TODO, also refactor code so this can appear later
+            //TODO add rosetta code to my citations
+            if (abs(obs_planar_distances.x + obs_planar_distances.y + obs_planar_distances.z) < threshold) {
+                //TODO, also refactor code so this can appear later 
+                float2 t1[3], t2[3];
+                has_collision = true;
+
+                // case project triangles onto axis aligned plane that gives them greatest area
+                // this prevents accidentally projecting triangles into lines
+                // use the semi perimeter method of calculating triangle areas
+                // since we are only comparing positive values, we avoid taking 
+                // square roots for performance
+                float2 xy_a =make_float2(obs.A[0], obs.A[1]);
+                float2 xy_b =make_float2(obs.B[0], obs.B[1]);
+                float2 xy_c =make_float2(obs.C[0], obs.C[1]);
+
+                float2 xz_a =make_float2(obs.A[0], obs.A[2]);
+                float2 xz_b =make_float2(obs.B[0], obs.B[2]);
+                float2 xz_c =make_float2(obs.C[0], obs.C[2]);
+
+                float2 yz_a =make_float2(obs.A[1], obs.A[2]);
+                float2 yz_b =make_float2(obs.B[1], obs.B[2]);
+                float2 yz_c =make_float2(obs.C[1], obs.C[2]);
+                
+                float xy_area_squared_squared = getTriAreaSquared(xy_a, xy_b, xy_c);
+                float xz_area_squared_squared = getTriAreaSquared(xz_a, xz_b, xz_c);
+                float yz_area_squared_squared = getTriAreaSquared(yz_a, yz_b, yz_c);
+
+                // TODO- refactor this into a function
+                if (xy_area_squared_squared >= xz_area_squared_squared &&
+                    xy_area_squared_squared >= yz_area_squared_squared) {
+                    t1[0] = xy_a;
+                    t1[1] = xy_b;
+                    t1[2] = xy_c;
+
+                    t2[0] = make_float2(rob.A[0], rob.A[1]);
+                    t2[1] = make_float2(rob.B[0], rob.B[1]);
+                    t2[2] = make_float2(rob.C[0], rob.C[1]);
+                } else if (xz_area_squared_squared >= yz_area_squared_squared) {
+                    t1[0] = xz_a;
+                    t1[1] = xz_b;
+                    t1[2] = xz_c;
+
+                    t2[0] = make_float2(rob.A[0], rob.A[2]);
+                    t2[1] = make_float2(rob.B[0], rob.B[2]);
+                    t2[2] = make_float2(rob.C[0], rob.C[2]);
+                } else {
+                    t1[0] = yz_a;
+                    t1[1] = yz_b;
+                    t1[2] = yz_c;
+
+                    t2[0] = make_float2(rob.A[1], rob.A[2]);
+                    t2[1] = make_float2(rob.B[1], rob.B[2]);
+                    t2[2] = make_float2(rob.C[1], rob.C[2]);
+                }
+                         
+                //Trangles must be expressed anti-clockwise
+                CheckTriWinding(t1[0], t1[1], t1[2]);
+                CheckTriWinding(t2[0], t2[1], t2[2]);
+
+                //For edge E of trangle 1,
+                for(int i=0; i<3; i++)
+                {
+                    int j=(i+1)%3;
+            
+                    //Check all points of trangle 2 lay on the external side of the edge E. If
+                    //they do, the triangles do not collide.
+                    if (edge_intersection(t1[i], t1[j], t2[0], threshold) &&
+                        edge_intersection(t1[i], t1[j], t2[1], threshold) &&
+                        edge_intersection(t1[i], t1[j], t2[2], threshold)){
+
+
+                        has_collision = false;
+                        break;
+                    }
+                }
+                
+                if (!has_collision)
+                    //For edge E of trangle 2,
+                    for(int i=0; i<3; i++)
+                    {
+                        int j=(i+1)%3;
+                
+                        //Check all points of trangle 1 lay on the external side of the edge E. If
+                        //they do, the triangles do not collide.
+                        if (edge_intersection(t2[i], t2[j], t1[0], threshold) &&
+                            edge_intersection(t2[i], t2[j], t1[1], threshold) &&
+                            edge_intersection(t2[i], t2[j], t1[2], threshold)){
+
+                            has_collision = false;
+                            break;
+
+                        }
+
+                    }
+            
+                if(has_collision){
+                    printf("Obstacle triangle %d is in collision with robot triangle %d,", idx, i);
+                    printf("rob triangle: ");
+                    break;
+                }
+                else {
+                    continue;
+                }
             }
+
 
             // may want to change 0 to some small threshhold above 0 to allow for coplanar case
             if ((obs_planar_distances.x > 0 && obs_planar_distances.y > 0 && obs_planar_distances.z > 0)
@@ -323,7 +494,7 @@ namespace mpt_demo {
             Vec3 rob_norm = rob_vec1.cross(rob_vec2);
 
             // scalar that satisfies obs_norm * X + obs_d = 0
-            float rob_d = -1 * rob_norm.dot(rob->A);
+            float rob_d = -1 * rob_norm.dot(rob.A);
 
             float3 rob_planar_distances;
             rob_planar_distances.x = rob_norm.dot(obs.A) + rob_d;
@@ -367,19 +538,19 @@ namespace mpt_demo {
             float rob_distance1, rob_distance2;
             if (obs_planar_distances.x > 0){
                 if (obs_planar_distances.y > 0){
-                    rob_intersect1 = direction.dot(rob->A);
-                    rob_intersect2 = direction.dot(rob->B);
+                    rob_intersect1 = direction.dot(rob.A);
+                    rob_intersect2 = direction.dot(rob.B);
                     rob_distance1 = obs_planar_distances.x;
                     rob_distance2 = obs_planar_distances.y;
                 } else {
-                    rob_intersect1 = direction.dot(rob->A);
-                    rob_intersect2 = direction.dot(rob->C);
+                    rob_intersect1 = direction.dot(rob.A);
+                    rob_intersect2 = direction.dot(rob.C);
                     rob_distance1 = obs_planar_distances.x;
                     rob_distance2 = obs_planar_distances.z;
                 }
             } else {
-                rob_intersect1 = direction.dot(rob->B);
-                rob_intersect2 = direction.dot(rob->C);
+                rob_intersect1 = direction.dot(rob.B);
+                rob_intersect2 = direction.dot(rob.C);
                 rob_distance1 = obs_planar_distances.y;
                 rob_distance2 = obs_planar_distances.z;
             }
@@ -413,12 +584,17 @@ namespace mpt_demo {
             if ( (obs_param2 < rob_param1) || obs_param1 > rob_param1) {
                 continue; // no collision
             } else {
+                printf("Obstacle triangle %d is in collision with robot triangle %d,", idx, i);
+                printf("rob triangle: ");
                 has_collision = true;
                 break;
             }
 
         }
-
+        if (has_collision){
+            printf("Obstacle triangle %d is in collision with robot triangle %d,", idx, i);
+            printf("rob triangle: ");
+        }
         collisions[idx] = has_collision;
     }
 
@@ -480,6 +656,7 @@ namespace mpt_demo {
             }
             size_t num_rob_triangles = (*robot_)[0].host_triangles_.size();
 
+            
             Transform tf = stateToTransform(q);
 
             // array of booleans, d_collisions[i] = true -> environment_.triangle[i] is
@@ -491,10 +668,18 @@ namespace mpt_demo {
             size_t numBlocks = num_env_triangles / block_size +1;
 
 
+            // for (int i = 0; i < num_rob_triangles; i++){
+
+            //     printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
+            //                         (*robot_)[0].host_triangles_[i].A[0], (*robot_)[0].host_triangles_[i].A[1], (*robot_)[0].host_triangles_[i].A[2],
+            //                         (*robot_)[0].host_triangles_[i].B[0], (*robot_)[0].host_triangles_[i].B[1], (*robot_)[0].host_triangles_[i].B[2],
+            //                         (*robot_)[0].host_triangles_[i].C[0], (*robot_)[0].host_triangles_[i].C[1], (*robot_)[0].host_triangles_[i].C[2]);
+            // }
+
             cudaDeviceSynchronize();
             detect_collision<<< numBlocks, 256>>>(  environment_->d_triangles_, num_env_triangles,
                                                     (*robot_)[0].d_triangles_, num_rob_triangles,
-                                                    d_collisions);
+                                                    d_collisions, tf);
             cudaDeviceSynchronize();
 
             cudaMemcpy(host_collisions, d_collisions, num_env_triangles * sizeof(bool), cudaMemcpyDeviceToHost);
@@ -503,7 +688,12 @@ namespace mpt_demo {
             bool isValid = true;
             for (int i = 0; i <num_env_triangles; i ++){
                 isValid = isValid && !host_collisions[i];
+                if (host_collisions[i]){
+                    // int zero = 0;
+                    std::cout << "env_triangle " << i <<"collides ";
+                }
             }
+            std::cout << isValid << std::endl;
 
             return isValid;
 
