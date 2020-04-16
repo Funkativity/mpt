@@ -39,8 +39,8 @@
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
-// #include <fcl/geometry/bvh/BVH_model.h>
-// #include <fcl/narrowphase/collision.h>
+#include <fcl/geometry/bvh/BVH_model.h>
+#include <fcl/narrowphase/collision.h>
 #include <functional>
 #include <memory>
 #include <mpt/discrete_motion_validator.hpp>
@@ -176,7 +176,8 @@ namespace mpt_demo::impl {
         using Transform = Eigen::Transform<Scalar, 3, Eigen::Affine>;
 
         std::string name_;
-
+        fcl::BVHModel<fcl::OBBRSS<Scalar>> model_;
+        
     public:
         std::vector<Triangle<Scalar>> host_triangles_; // RAM copy of triangles
         Triangle<Scalar> *d_triangles_; //pointer to GPU copy of triangles for a mesh
@@ -211,14 +212,22 @@ namespace mpt_demo::impl {
             if (shiftToCenter)
                 rootTransform *= Eigen::Translation<Scalar, 3>(-center);
 
-            host_triangles_.reserve(nVertices); // could be an unhelpful optimization, but worth a try!
+            model_.beginModel();
             std::size_t nTris = visitTriangles(
                 scene,
                 scene->mRootNode,
                 rootTransform,
                 [&] (const Vec3& a, const Vec3& b, const Vec3& c) {
-                    host_triangles_.emplace_back(a, b, c);
+                    model_.addTriangle(a, b, c);
                 });
+            model_.endModel();
+            model_.computeLocalAABB();
+
+            for (int i = 0; i < model_.num_tris; i++) {
+                host_triangles_.emplace_back(   model_.vertices[model_.tri_indices[i][0]],
+                                                model_.vertices[model_.tri_indices[i][1]],
+                                                model_.vertices[model_.tri_indices[i][2]]);
+            }
 
             cudaMalloc((void **) &d_triangles_, sizeof(Triangle<Scalar>) * host_triangles_.size());
 
@@ -312,7 +321,7 @@ namespace mpt_demo {
             bool *collisions, Eigen::Transform<float, 3, Eigen::Isometry> tf){
 
         // want some tolerance when comparing to 0 to account for float errors
-        float threshold = 0.00001f;
+        float threshold = 0.0001f;
 
         int idx = threadIdx.x + blockIdx.x * blockDim.x;
 
@@ -320,22 +329,22 @@ namespace mpt_demo {
         if (idx >= obs_size){
             return;
         }
-        if (idx == 0){
-            // printf("There are %d obstacle triangles", obs_size );
-            // for (int i = 0; i < obs_size; i++){
-            //     printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
-            //                         obstacles[i].A[0], obstacles[i].A[1], obstacles[i].A[2],
-            //                         obstacles[i].B[0], obstacles[i].B[1], obstacles[i].B[2],
-            //                         obstacles[i].C[0], obstacles[i].C[1], obstacles[i].C[2]);
-            // }
-            printf("There are %d robot triangles", rob_size );
-            // for (int i = 0; i < rob_size; i++){
-            //     printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
-            //                         robot[i].A[0], robot[i].A[1], robot[i].A[2],
-            //                         robot[i].B[0], robot[i].B[1], robot[i].B[2],
-            //                         robot[i].C[0], robot[i].C[1], robot[i].C[2]);
-            // }
-        }
+        // if (idx == 0){
+        //     // printf("There are %d obstacle triangles", obs_size );
+        //     // for (int i = 0; i < obs_size; i++){
+        //     //     printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
+        //     //                         obstacles[i].A[0], obstacles[i].A[1], obstacles[i].A[2],
+        //     //                         obstacles[i].B[0], obstacles[i].B[1], obstacles[i].B[2],
+        //     //                         obstacles[i].C[0], obstacles[i].C[1], obstacles[i].C[2]);
+        //     // }
+        //     printf("There are %d robot triangles", rob_size );
+        //     // for (int i = 0; i < rob_size; i++){
+        //     //     printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
+        //     //                         robot[i].A[0], robot[i].A[1], robot[i].A[2],
+        //     //                         robot[i].B[0], robot[i].B[1], robot[i].B[2],
+        //     //                         robot[i].C[0], robot[i].C[1], robot[i].C[2]);
+        //     // }
+        // }
         impl::Triangle<float> obs = obstacles[idx];
 
         // calculate normal for our obstacle triangle
@@ -350,7 +359,14 @@ namespace mpt_demo {
         // scalar that satisfies obs_norm * X + obs_d = 0dot
         float obs_d = -1 * obs_norm.dot(obs.A);
 
+        // case where vertices of a 'triangle' are colinear- ignore collision
+        // todo, do line intersection test with triangle
+        if (fabsf(obs_norm[0]) < threshold && fabsf(obs_norm[1]) < threshold && fabsf(obs_norm[2]) < threshold){
+            collisions[idx] = false;
+            return;
+        }
 
+        
         //test for intersection against all robot triangles
         ////////////////////////////////////////////////////////////////////////
         bool has_collision = false;
@@ -374,9 +390,21 @@ namespace mpt_demo {
             obs_planar_distances.y = obs_norm.dot(rob.B) + obs_d;
             obs_planar_distances.z = obs_norm.dot(rob.C) + obs_d;
 
+            // if (i == 8 && (idx == 44  || idx == 140)){
+            //     printf("Obstacle planar distances \nx: %f\ny: %f\nz:  %f\n",
+            //             obs_planar_distances.x,
+            //             obs_planar_distances.y,
+            //             obs_planar_distances.z);
+            //     printf("Obs norm is \nx: %f\ny: %f\nz:  %f\n",
+            //             obs_norm[0],
+            //             obs_norm[1],
+            //             obs_norm[2]);
+            //     printf("Obs_d is %f\n", obs_d);
+            // }
+
             // coplanar case
             //TODO add rosetta code to my citations
-            if (abs(obs_planar_distances.x + obs_planar_distances.y + obs_planar_distances.z) < threshold) {
+            if (fabsf(obs_planar_distances.x + obs_planar_distances.y + obs_planar_distances.z) < threshold) {
                 //TODO, also refactor code so this can appear later 
                 float2 t1[3], t2[3];
                 has_collision = true;
@@ -471,8 +499,13 @@ namespace mpt_demo {
                     }
             
                 if(has_collision){
-                    printf("Obstacle triangle %d is in collision with robot triangle %d,", idx, i);
-                    printf("rob triangle: ");
+                    // printf("Obstacle triangle %d is in collision with robot triangle %d,", idx, i);
+                    // printf("rob triangle: ");
+                    // printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
+                    // rob.A[0], rob.A[1], rob.A[2],
+                    // rob.B[0], rob.B[1], rob.B[2],
+                    // rob.C[0], rob.C[1], rob.C[2]);
+            
                     break;
                 }
                 else {
@@ -480,17 +513,17 @@ namespace mpt_demo {
                 }
             }
 
-
-            // may want to change 0 to some small threshhold above 0 to allow for coplanar case
-            if ((obs_planar_distances.x > 0 && obs_planar_distances.y > 0 && obs_planar_distances.z > 0)
-                    || (obs_planar_distances.x < 0 && obs_planar_distances.y < 0 && obs_planar_distances.z < 0)){
-                continue;
-            }
+            
 
             ///////////////////////////////////////////////////////////////////////////////////
+
+            if ((obs_planar_distances.x > threshold && obs_planar_distances.y > threshold && obs_planar_distances.z > threshold)
+                    || (obs_planar_distances.x < -threshold && obs_planar_distances.y < -threshold && obs_planar_distances.z < -threshold)){
+                continue;   
+            }
             // calculate the projection of the obstacle triangle against the robot triangle now
-            Vec3 rob_vec1 = obs.B - obs.A;
-            Vec3 rob_vec2 = obs.C - obs.A;
+            Vec3 rob_vec2 = rob.C - rob.A;
+            Vec3 rob_vec1 = rob.B - rob.A;
             Vec3 rob_norm = rob_vec1.cross(rob_vec2);
 
             // scalar that satisfies obs_norm * X + obs_d = 0
@@ -512,20 +545,21 @@ namespace mpt_demo {
             Vec3 direction = rob_norm.cross(obs_norm);
 
             // get points of obs intersecting line and corresponding planar distance
-            float obs_intersect1, obs_intersect2;
+            float obs_intersect1, obs_intersect2, obs_intersect3;
             float obs_distance1, obs_distance2;
-            if (rob_planar_distances.x > 0){
-                if (rob_planar_distances.y > 0){
-                    obs_intersect1 = direction.dot(obs.A);
-                    obs_intersect2 = direction.dot(obs.B);
-                    obs_distance1 = rob_planar_distances.x;
-                    obs_distance2 = rob_planar_distances.y;
-                } else {
-                    obs_intersect1 = direction.dot(obs.A);
-                    obs_intersect2 = direction.dot(obs.C);
-                    obs_distance1 = rob_planar_distances.x;
-                    obs_distance2 = rob_planar_distances.z;
-                }
+            //TODO: smarter if statements
+            if ((rob_planar_distances.x > threshold && rob_planar_distances.y > threshold)
+                    || (rob_planar_distances.x < -threshold && rob_planar_distances.y < -threshold)){
+                obs_intersect1 = direction.dot(obs.A);
+                obs_intersect2 = direction.dot(obs.B);
+                obs_distance1 = rob_planar_distances.x;
+                obs_distance2 = rob_planar_distances.y; 
+            } else if ((rob_planar_distances.x > threshold && rob_planar_distances.y > threshold)
+                    || (rob_planar_distances.x < -threshold && rob_planar_distances.z < -threshold)){
+                obs_intersect1 = direction.dot(obs.A);
+                obs_intersect2 = direction.dot(obs.C);
+                obs_distance1 = rob_planar_distances.x;
+                obs_distance2 = rob_planar_distances.z;
             } else {
                 obs_intersect1 = direction.dot(obs.B);
                 obs_intersect2 = direction.dot(obs.C);
@@ -536,18 +570,18 @@ namespace mpt_demo {
             // get points of rob intersecting line
             float rob_intersect1, rob_intersect2;
             float rob_distance1, rob_distance2;
-            if (obs_planar_distances.x > 0){
-                if (obs_planar_distances.y > 0){
-                    rob_intersect1 = direction.dot(rob.A);
-                    rob_intersect2 = direction.dot(rob.B);
-                    rob_distance1 = obs_planar_distances.x;
-                    rob_distance2 = obs_planar_distances.y;
-                } else {
-                    rob_intersect1 = direction.dot(rob.A);
-                    rob_intersect2 = direction.dot(rob.C);
-                    rob_distance1 = obs_planar_distances.x;
-                    rob_distance2 = obs_planar_distances.z;
-                }
+            if ((obs_planar_distances.x > threshold && obs_planar_distances.y > threshold)
+                    || (obs_planar_distances.x < -threshold && obs_planar_distances.y < -threshold)){
+                rob_intersect1 = direction.dot(rob.A);
+                rob_intersect2 = direction.dot(rob.B);
+                rob_distance1 = obs_planar_distances.x;
+                rob_distance2 = obs_planar_distances.y; 
+            } else if ((obs_planar_distances.x > threshold && obs_planar_distances.y > threshold)
+                    || (obs_planar_distances.x < -threshold && obs_planar_distances.z < -threshold)){
+                rob_intersect1 = direction.dot(rob.A);
+                rob_intersect2 = direction.dot(rob.C);
+                rob_distance1 = obs_planar_distances.x;
+                rob_distance2 = obs_planar_distances.z;
             } else {
                 rob_intersect1 = direction.dot(rob.B);
                 rob_intersect2 = direction.dot(rob.C);
@@ -581,19 +615,31 @@ namespace mpt_demo {
                 rob_param1 = tmp;
             }
 
-            if ( (obs_param2 < rob_param1) || obs_param1 > rob_param1) {
+            if ( (obs_param2 < rob_param1) || obs_param1 > rob_param2) {
                 continue; // no collision
             } else {
-                printf("Obstacle triangle %d is in collision with robot triangle %d,", idx, i);
-                printf("rob triangle: ");
+                if (idx == 16){
+                    printf("Obstacle triangle %d is in collision with robot triangle %d \n", idx, i);
+                    printf("rob triangle: ");
+                    printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
+                        rob.A[0], rob.A[1], rob.A[2],
+                        rob.B[0], rob.B[1], rob.B[2],
+                        rob.C[0], rob.C[1], rob.C[2]);
+                    printf("distances from robot to obstacle plane: (%f, %f, %f)\n", 
+                        obs_planar_distances.x,
+                        obs_planar_distances.y,
+                        obs_planar_distances.z);
+                    printf("distances from obstacle to robot plane: (%f, %f, %f)\n", 
+                        rob_planar_distances.x,
+                        rob_planar_distances.y,
+                        rob_planar_distances.z);
+                }    
+                
                 has_collision = true;
+
                 break;
             }
 
-        }
-        if (has_collision){
-            printf("Obstacle triangle %d is in collision with robot triangle %d,", idx, i);
-            printf("rob triangle: ");
         }
         collisions[idx] = has_collision;
     }
@@ -693,7 +739,7 @@ namespace mpt_demo {
                     std::cout << "env_triangle " << i <<"collides ";
                 }
             }
-            std::cout << isValid << std::endl;
+            // std::cout << isValid << std::endl;
 
             return isValid;
 

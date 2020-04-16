@@ -106,8 +106,9 @@ namespace unc::robotics::mpt {
             while (qStart != qEnd) {
                 auto [min, max] = queue[qStart++ % fixedBisectQueueSize_];
                 if (min == max) {
-                    if (!static_cast<const StateValidator&>(*this)(interpolate(space_, from, to, min * delta)))
+                    if (!static_cast<const StateValidator&>(*this)(interpolate(space_, from, to, min * delta))){
                         return false;
+                    }
                 } else if (qEnd + 2 < qStart + fixedBisectQueueSize_) {
                     std::size_t mid = (min + max) / 2;
                     if (!static_cast<const StateValidator&>(*this)(interpolate(space_, from, to, mid * delta)))

@@ -276,7 +276,7 @@ namespace unc::robotics::mpt::impl::pprm {
         Worker(unsigned no, const Scenario& scenario, const RNGSeed& seed)
             : no_(no)
             , scenario_(scenario)
-            , rng_(seed)
+            , rng_(0)
         {
         }
 
