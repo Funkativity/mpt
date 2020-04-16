@@ -265,56 +265,283 @@ namespace mpt_demo {
 
     // CUDA helper functions
     //////////////////////////////////////////////////////////////////////////////////
+__device__ int coplanar_tri_tri(double N[3],double V0[3],double V1[3],double V2[3],
+                     double U0[3],double U1[3],double U2[3]);
+
+// some vector macros 
 
 
-    __device__ inline float det_2d(float2 &p1, float2 &p2, float2 &p3) {
-        return  p1.x*(p2.y-p3.y)
-                +p2.x*(p3.y-p1.y)
-                +p3.x*(p1.y-p2.y);
+    #define FABS(x) (x>=0?x:-x)        /* implement as is fastest on your machine */
+
+    #define CROSS(dest,v1,v2)                       \
+                dest[0]=v1[1]*v2[2]-v1[2]*v2[1]; \
+                dest[1]=v1[2]*v2[0]-v1[0]*v2[2]; \
+                dest[2]=v1[0]*v2[1]-v1[1]*v2[0];
+
+
+
+    #define   sVpsV_2( Vr, s1,  V1,s2, V2);\
+        {\
+    Vr[0] = s1*V1[0] + s2*V2[0];\
+    Vr[1] = s1*V1[1] + s2*V2[1];\
+    }\
+
+    #define myVpV(g,v2,v1);\
+    {\
+        g[0] = v2[0]+v1[0];\
+        g[1] = v2[1]+v1[1];\
+        g[2] = v2[2]+v1[2];\
+        }\
+
+    #define myVmV(g,v2,v1);\
+    {\
+        g[0] = v2[0]-v1[0];\
+        g[1] = v2[1]-v1[1];\
+        g[2] = v2[2]-v1[2];\
+        }\
+        
+    // 2D intersection of segment and triangle.
+    #define seg_collide3( q, r)\
+    {\
+        p1[0]=SF*P1[0];\
+        p1[1]=SF*P1[1];\
+        p2[0]=SF*P2[0];\
+        p2[1]=SF*P2[1];\
+        det1 = p1[0]*q[1]-q[0]*p1[1];\
+        gama1 = (p1[0]*r[1]-r[0]*p1[1])*det1;\
+        alpha1 = (r[0]*q[1] - q[0]*r[1])*det1;\
+        alpha1_legal = (alpha1>=0) && (alpha1<=(det1*det1)  && (det1!=0));\
+        det2 = p2[0]*q[1] - q[0]*p2[1];\
+        alpha2 = (r[0]*q[1] - q[0]*r[1]) *det2;\
+        gama2 = (p2[0]*r[1] - r[0]*p2[1]) * det2;\
+        alpha2_legal = (alpha2>=0) && (alpha2<=(det2*det2) && (det2 !=0));\
+        det3=det2-det1;\
+        gama3=((p2[0]-p1[0])*(r[1]-p1[1]) - (r[0]-p1[0])*(p2[1]-p1[1]))*det3;\
+        if (alpha1_legal)\
+        {\
+            if (alpha2_legal)\
+            {\
+                if ( ((gama1<=0) && (gama1>=-(det1*det1))) || ((gama2<=0) && (gama2>=-(det2*det2))) || (gama1*gama2<0)) return 12;\
+            }\
+            else\
+            {\
+                if ( ((gama1<=0) && (gama1>=-(det1*det1))) || ((gama3<=0) && (gama3>=-(det3*det3))) || (gama1*gama3<0)) return 13;\
+                }\
+        }\
+        else\
+        if (alpha2_legal)\
+        {\
+            if ( ((gama2<=0) && (gama2>=-(det2*det2))) || ((gama3<=0) && (gama3>=-(det3*det3))) || (gama2*gama3<0)) return 23;\
+            }\
+        return 0;\
+        }
+
+
+
+
+    //main procedure
+
+    __device__ int tr_tri_intersect3D (double *C1, double *P1, double *P2,
+            double *D1, double *Q1, double *Q2)
+    {
+        double  t[3],p1[3], p2[3],r[3],r4[3];
+        double beta1, beta2, beta3;
+        double gama1, gama2, gama3;
+        double det1, det2, det3;
+        double dp0, dp1, dp2;
+        double dq1,dq2,dq3,dr, dr3;
+        double alpha1, alpha2;
+        bool alpha1_legal, alpha2_legal;
+        double  SF;
+        bool beta1_legal, beta2_legal;
+                
+        myVmV(r,D1,C1);
+        // determinant computation	
+        dp0 = P1[1]*P2[2]-P2[1]*P1[2];
+        dp1 = P1[0]*P2[2]-P2[0]*P1[2];
+        dp2 = P1[0]*P2[1]-P2[0]*P1[1];
+        dq1 = Q1[0]*dp0 - Q1[1]*dp1 + Q1[2]*dp2;
+        dq2 = Q2[0]*dp0 - Q2[1]*dp1 + Q2[2]*dp2;
+        dr  = -r[0]*dp0  + r[1]*dp1  - r[2]*dp2;
+
+        
+        
+        beta1 = dr*dq2;  // beta1, beta2 are scaled so that beta_i=beta_i*dq1*dq2
+        beta2 = dr*dq1;
+        beta1_legal = (beta2>=0) && (beta2 <=dq1*dq1) && (dq1 != 0);
+        beta2_legal = (beta1>=0) && (beta1 <=dq2*dq2) && (dq2 != 0);
+            
+        dq3=dq2-dq1;
+        dr3=+dr-dq1;   // actually this is -dr3
+        
+
+        if ((dq1 == 0) && ( dq2 == 0))
+        {
+            if (dr != 0) return 0;  // triangles are on parallel planes
+            else
+            {						// triangles are on the same plane
+                double C2[3],C3[3],D2[3],D3[3], N1[3];
+                // We use the coplanar test of Moller which takes the 6 vertices and 2 normals  
+                //as input.
+                myVpV(C2,C1,P1);
+                myVpV(C3,C1,P2);
+                myVpV(D2,D1,Q1);
+                myVpV(D3,D1,Q2);
+                CROSS(N1,P1,P2);
+                return coplanar_tri_tri(N1,C1, C2,C3,D1,D2,D3);
+                return false;
+            }
+        }
+
+        else if (!beta2_legal && !beta1_legal) return 0;// fast reject-all vertices are on
+                                                        // the same side of the triangle plane
+
+        else if (beta2_legal && beta1_legal)    //beta1, beta2
+        {
+            SF = dq1*dq2;
+            sVpsV_2(t,beta2,Q2, (-beta1),Q1);
+        }
+        
+        else if (beta1_legal && !beta2_legal)   //beta1, beta3
+        {
+            SF = dq1*dq3;
+            beta1 =beta1-beta2;   // all betas are multiplied by a positive SF
+            beta3 =dr3*dq1;
+            sVpsV_2(t,(SF-beta3-beta1),Q1,beta3,Q2);
+        }
+        
+        else if (beta2_legal && !beta1_legal) //beta2, beta3
+        {
+            SF = dq2*dq3;
+            beta2 =beta1-beta2;   // all betas are multiplied by a positive SF
+            beta3 =dr3*dq2;
+            sVpsV_2(t,(SF-beta3),Q1,(beta3-beta2),Q2);
+            Q1=Q2;
+            beta1=beta2;
+        }
+        sVpsV_2(r4,SF,r,beta1,Q1);
+        seg_collide3(t,r4);  // calculates the 2D intersection
+        return 0;
     }
 
-    // swaps the vertices of a 2d triangle so that they're in the order
-    // needed for the 2d_triangle_intersect test
-    __device__  void CheckTriWinding(float2 &p1, float2 &p2, float2 &p3){
-        float detTri = det_2d(p1, p2, p3);
-        if(detTri < 0.0)
+        /* this edge to edge test is based on Franlin Antonio's gem:
+    "Faster Line Segment Intersection", in Graphics Gems III,
+    pp. 199-202 */ 
+    #define FABS(x) (x>=0?x:-x)        /* implement as is fastest on your machine */
+
+    #define EDGE_EDGE_TEST(V0,U0,U1)                      \
+    Bx=U0[i0]-U1[i0];                                   \
+    By=U0[i1]-U1[i1];                                   \
+    Cx=V0[i0]-U0[i0];                                   \
+    Cy=V0[i1]-U0[i1];                                   \
+    f=Ay*Bx-Ax*By;                                      \
+    d=By*Cx-Bx*Cy;                                      \
+    if((f>0 && d>=0 && d<=f) || (f<0 && d<=0 && d>=f))  \
+    {                                                   \
+        e=Ax*Cy-Ay*Cx;                                    \
+        if(f>0)                                           \
+        {                                                 \
+        if(e>=0 && e<=f) return 1;                      \
+        }                                                 \
+        else                                              \
+        {                                                 \
+        if(e<=0 && e>=f) return 1;                      \
+        }                                                 \
+    }                                
+
+    #define EDGE_AGAINST_TRI_EDGES(V0,V1,U0,U1,U2) \
+    {                                              \
+    double Ax,Ay,Bx,By,Cx,Cy,e,d,f;               \
+    Ax=V1[i0]-V0[i0];                            \
+    Ay=V1[i1]-V0[i1];                            \
+    /* test edge U0,U1 against V0,V1 */          \
+    EDGE_EDGE_TEST(V0,U0,U1);                    \
+    /* test edge U1,U2 against V0,V1 */          \
+    EDGE_EDGE_TEST(V0,U1,U2);                    \
+    /* test edge U2,U1 against V0,V1 */          \
+    EDGE_EDGE_TEST(V0,U2,U0);                    \
+    }
+
+    #define POINT_IN_TRI(V0,U0,U1,U2)           \
+    {                                           \
+    double a,b,c,d0,d1,d2;                     \
+    /* is T1 completly inside T2? */          \
+    /* check if V0 is inside tri(U0,U1,U2) */ \
+    a=U1[i1]-U0[i1];                          \
+    b=-(U1[i0]-U0[i0]);                       \
+    c=-a*U0[i0]-b*U0[i1];                     \
+    d0=a*V0[i0]+b*V0[i1]+c;                   \
+                                                \
+    a=U2[i1]-U1[i1];                          \
+    b=-(U2[i0]-U1[i0]);                       \
+    c=-a*U1[i0]-b*U1[i1];                     \
+    d1=a*V0[i0]+b*V0[i1]+c;                   \
+                                                \
+    a=U0[i1]-U2[i1];                          \
+    b=-(U0[i0]-U2[i0]);                       \
+    c=-a*U2[i0]-b*U2[i1];                     \
+    d2=a*V0[i0]+b*V0[i1]+c;                   \
+    if(d0*d1>0.0)                             \
+    {                                         \
+        if(d0*d2>0.0) return 1;                 \
+    }                                         \
+    }
+
+    //This procedure testing for intersection between coplanar triangles is taken 
+    // from Tomas Moller's
+    //"A Fast Triangle-Triangle Intersection Test",Journal of Graphics Tools, 2(2), 1997
+    __device__ int coplanar_tri_tri(double N[3],double V0[3],double V1[3],double V2[3],
+                        double U0[3],double U1[3],double U2[3])
+    {
+    double A[3];
+    short i0,i1;
+    /* first project onto an axis-aligned plane, that maximizes the area */
+    /* of the triangles, compute indices: i0,i1. */
+    A[0]=FABS(N[0]);
+    A[1]=FABS(N[1]);
+    A[2]=FABS(N[2]);
+    if(A[0]>A[1])
+    {
+        if(A[0]>A[2])  
         {
-            float2 a = p3;
-            p3 = p2;
-            p2 = a;
+            i0=1;      /* A[0] is greatest */
+            i1=2;
+        }
+        else
+        {
+            i0=0;      /* A[2] is greatest */
+            i1=1;
         }
     }
+    else   /* A[0]<=A[1] */
+    {
+        if(A[2]>A[1])
+        {
+            i0=0;      /* A[2] is greatest */
+            i1=1;                                           
+        }
+        else
+        {
+            i0=0;      /* A[1] is greatest */
+            i1=2;
+        }
+        }               
+                    
+        /* test all edges of triangle 1 against the edges of triangle 2 */
+        EDGE_AGAINST_TRI_EDGES(V0,V1,U0,U1,U2);
+        EDGE_AGAINST_TRI_EDGES(V1,V2,U0,U1,U2);
+        EDGE_AGAINST_TRI_EDGES(V2,V0,U0,U1,U2);
+                    
+        /* finally, test if tri1 is totally contained in tri2 or vice versa */
+        POINT_IN_TRI(V0,U0,U1,U2);
+        POINT_IN_TRI(U0,V0,V1,V2);
 
-
-
-    __device__ inline float getTriAreaSquared(float2 a, float2 b, float2 c){
-        float a_len_squared =   (b.x - c.x) * (b.x - c.x) + 
-                                (b.y - c.y) * (b.y - c.y); 
-
-        float b_len_squared =   (a.x - c.x) * (a.x - c.x) + 
-                                (a.y - c.y) * (a.y - c.y); 
-
-        float c_len_squared =   (a.x - b.x) * (a.x - b.x) + 
-                                (a.y - b.y) * (a.y - b.y); 
-        
-        float semi_perimeter = (a_len_squared + b_len_squared + c_len_squared) / 2.0f;
-
-        return semi_perimeter * (semi_perimeter - a_len_squared)
-                              * (semi_perimeter - b_len_squared)
-                              * (semi_perimeter - c_len_squared);
+        return 0;
     }
 
 
-
-    __device__ inline bool edge_intersection(float2 &p1, float2 &p2, float2 &p3, double eps){
-        return det_2d(p1, p2, p3) < eps;
-    }
-
-    // returns the t1 value as seen in equation (4) in the cited paper
-    __device__ float getParam(float p0, float p1, float d0, float d1){
-        return (p0 + (p1 - p0) * (d0) / (d0 - d1));
-    }
-
+    
+    
     __global__ void detect_collision(
             impl::Triangle<float> *obstacles, size_t obs_size,
             impl::Triangle<float> *robot, size_t rob_size,
@@ -363,10 +590,14 @@ namespace mpt_demo {
         // todo, do line intersection test with triangle
         if (fabsf(obs_norm[0]) < threshold && fabsf(obs_norm[1]) < threshold && fabsf(obs_norm[2]) < threshold){
             collisions[idx] = false;
+            
             return;
         }
 
-        
+
+        double obs_center_vertex[] = {obs.A[0], obs.A[1], obs.A[2]};
+        double obs_edge_B[] =      {obs.B[0] - obs.A[0], obs.B[1] - obs.A[1], obs.B[2] - obs.A[2]};
+        double obs_edge_C[] =      {obs.C[0] - obs.A[0], obs.C[1] - obs.A[1], obs.C[2] - obs.A[2]};        
         //test for intersection against all robot triangles
         ////////////////////////////////////////////////////////////////////////
         bool has_collision = false;
@@ -375,271 +606,24 @@ namespace mpt_demo {
             impl::Triangle<float> rob(  tf * pre_trans_rob.A, 
                                         tf * pre_trans_rob.B,
                                         tf * pre_trans_rob.C);
-            // if (idx == 0){
-            //     printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
-            //         robot[i].A[0], robot[i].A[1], robot[i].A[2],
-            //         robot[i].B[0], robot[i].B[1], robot[i].B[2],
-            //         robot[i].C[0], robot[i].C[1], robot[i].C[2]);
             
-            // }
-            float3 obs_planar_distances;
 
-            // note: x, y, and z represent which the distances
-            // from the triangle to the obstacle plane, not coordinates
-            obs_planar_distances.x = obs_norm.dot(rob.A) + obs_d;
-            obs_planar_distances.y = obs_norm.dot(rob.B) + obs_d;
-            obs_planar_distances.z = obs_norm.dot(rob.C) + obs_d;
 
-            // if (i == 8 && (idx == 44  || idx == 140)){
-            //     printf("Obstacle planar distances \nx: %f\ny: %f\nz:  %f\n",
-            //             obs_planar_distances.x,
-            //             obs_planar_distances.y,
-            //             obs_planar_distances.z);
-            //     printf("Obs norm is \nx: %f\ny: %f\nz:  %f\n",
-            //             obs_norm[0],
-            //             obs_norm[1],
-            //             obs_norm[2]);
-            //     printf("Obs_d is %f\n", obs_d);
-            // }
+            double rob_center_vertex[] = {rob.A[0], rob.A[1], rob.A[2]};
+            double rob_edge_B[] =      {rob.B[0] - rob.A[0], rob.B[1] - rob.A[1], rob.B[2] - rob.A[2]};
+            double rob_edge_C[] =      {rob.C[0] - rob.A[0], rob.C[1] - rob.A[1], rob.C[2] - rob.A[2]};
 
-            // coplanar case
-            //TODO add rosetta code to my citations
-            if (fabsf(obs_planar_distances.x + obs_planar_distances.y + obs_planar_distances.z) < threshold) {
-                //TODO, also refactor code so this can appear later 
-                float2 t1[3], t2[3];
-                has_collision = true;
-
-                // case project triangles onto axis aligned plane that gives them greatest area
-                // this prevents accidentally projecting triangles into lines
-                // use the semi perimeter method of calculating triangle areas
-                // since we are only comparing positive values, we avoid taking 
-                // square roots for performance
-                float2 xy_a =make_float2(obs.A[0], obs.A[1]);
-                float2 xy_b =make_float2(obs.B[0], obs.B[1]);
-                float2 xy_c =make_float2(obs.C[0], obs.C[1]);
-
-                float2 xz_a =make_float2(obs.A[0], obs.A[2]);
-                float2 xz_b =make_float2(obs.B[0], obs.B[2]);
-                float2 xz_c =make_float2(obs.C[0], obs.C[2]);
-
-                float2 yz_a =make_float2(obs.A[1], obs.A[2]);
-                float2 yz_b =make_float2(obs.B[1], obs.B[2]);
-                float2 yz_c =make_float2(obs.C[1], obs.C[2]);
+            if (tr_tri_intersect3D      (obs_center_vertex, obs_edge_B, obs_edge_C,
+                                         rob_center_vertex, rob_edge_B, rob_edge_C)){
+                has_collision=true;
                 
-                float xy_area_squared_squared = getTriAreaSquared(xy_a, xy_b, xy_c);
-                float xz_area_squared_squared = getTriAreaSquared(xz_a, xz_b, xz_c);
-                float yz_area_squared_squared = getTriAreaSquared(yz_a, yz_b, yz_c);
-
-                // TODO- refactor this into a function
-                if (xy_area_squared_squared >= xz_area_squared_squared &&
-                    xy_area_squared_squared >= yz_area_squared_squared) {
-                    t1[0] = xy_a;
-                    t1[1] = xy_b;
-                    t1[2] = xy_c;
-
-                    t2[0] = make_float2(rob.A[0], rob.A[1]);
-                    t2[1] = make_float2(rob.B[0], rob.B[1]);
-                    t2[2] = make_float2(rob.C[0], rob.C[1]);
-                } else if (xz_area_squared_squared >= yz_area_squared_squared) {
-                    t1[0] = xz_a;
-                    t1[1] = xz_b;
-                    t1[2] = xz_c;
-
-                    t2[0] = make_float2(rob.A[0], rob.A[2]);
-                    t2[1] = make_float2(rob.B[0], rob.B[2]);
-                    t2[2] = make_float2(rob.C[0], rob.C[2]);
-                } else {
-                    t1[0] = yz_a;
-                    t1[1] = yz_b;
-                    t1[2] = yz_c;
-
-                    t2[0] = make_float2(rob.A[1], rob.A[2]);
-                    t2[1] = make_float2(rob.B[1], rob.B[2]);
-                    t2[2] = make_float2(rob.C[1], rob.C[2]);
-                }
-                         
-                //Trangles must be expressed anti-clockwise
-                CheckTriWinding(t1[0], t1[1], t1[2]);
-                CheckTriWinding(t2[0], t2[1], t2[2]);
-
-                //For edge E of trangle 1,
-                for(int i=0; i<3; i++)
-                {
-                    int j=(i+1)%3;
-            
-                    //Check all points of trangle 2 lay on the external side of the edge E. If
-                    //they do, the triangles do not collide.
-                    if (edge_intersection(t1[i], t1[j], t2[0], threshold) &&
-                        edge_intersection(t1[i], t1[j], t2[1], threshold) &&
-                        edge_intersection(t1[i], t1[j], t2[2], threshold)){
-
-
-                        has_collision = false;
-                        break;
-                    }
-                }
-                
-                if (!has_collision)
-                    //For edge E of trangle 2,
-                    for(int i=0; i<3; i++)
-                    {
-                        int j=(i+1)%3;
-                
-                        //Check all points of trangle 1 lay on the external side of the edge E. If
-                        //they do, the triangles do not collide.
-                        if (edge_intersection(t2[i], t2[j], t1[0], threshold) &&
-                            edge_intersection(t2[i], t2[j], t1[1], threshold) &&
-                            edge_intersection(t2[i], t2[j], t1[2], threshold)){
-
-                            has_collision = false;
-                            break;
-
-                        }
-
-                    }
-            
-                if(has_collision){
-                    // printf("Obstacle triangle %d is in collision with robot triangle %d,", idx, i);
-                    // printf("rob triangle: ");
-                    // printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
-                    // rob.A[0], rob.A[1], rob.A[2],
-                    // rob.B[0], rob.B[1], rob.B[2],
-                    // rob.C[0], rob.C[1], rob.C[2]);
-            
-                    break;
-                }
-                else {
-                    continue;
-                }
-            }
-
-            
-
-            ///////////////////////////////////////////////////////////////////////////////////
-
-            if ((obs_planar_distances.x > threshold && obs_planar_distances.y > threshold && obs_planar_distances.z > threshold)
-                    || (obs_planar_distances.x < -threshold && obs_planar_distances.y < -threshold && obs_planar_distances.z < -threshold)){
-                continue;   
-            }
-            // calculate the projection of the obstacle triangle against the robot triangle now
-            Vec3 rob_vec2 = rob.C - rob.A;
-            Vec3 rob_vec1 = rob.B - rob.A;
-            Vec3 rob_norm = rob_vec1.cross(rob_vec2);
-
-            // scalar that satisfies obs_norm * X + obs_d = 0
-            float rob_d = -1 * rob_norm.dot(rob.A);
-
-            float3 rob_planar_distances;
-            rob_planar_distances.x = rob_norm.dot(obs.A) + rob_d;
-            rob_planar_distances.y = rob_norm.dot(obs.B) + rob_d;
-            rob_planar_distances.z = rob_norm.dot(obs.C) + rob_d;
-
-            if ((rob_planar_distances.x > threshold && rob_planar_distances.y > threshold && rob_planar_distances.z > threshold)
-                    || (rob_planar_distances.x < -threshold && rob_planar_distances.y < -threshold && rob_planar_distances.z < -threshold)){
-                continue;
-            }
-            ///////////////////////////////////////////////////////////////////////////////////
-
-            // this is the direction of the line created by the intersection of the planes
-            // of both triangles
-            Vec3 direction = rob_norm.cross(obs_norm);
-
-            // get points of obs intersecting line and corresponding planar distance
-            float obs_intersect1, obs_intersect2, obs_intersect3;
-            float obs_distance1, obs_distance2;
-            //TODO: smarter if statements
-            if ((rob_planar_distances.x > threshold && rob_planar_distances.y > threshold)
-                    || (rob_planar_distances.x < -threshold && rob_planar_distances.y < -threshold)){
-                obs_intersect1 = direction.dot(obs.A);
-                obs_intersect2 = direction.dot(obs.B);
-                obs_distance1 = rob_planar_distances.x;
-                obs_distance2 = rob_planar_distances.y; 
-            } else if ((rob_planar_distances.x > threshold && rob_planar_distances.y > threshold)
-                    || (rob_planar_distances.x < -threshold && rob_planar_distances.z < -threshold)){
-                obs_intersect1 = direction.dot(obs.A);
-                obs_intersect2 = direction.dot(obs.C);
-                obs_distance1 = rob_planar_distances.x;
-                obs_distance2 = rob_planar_distances.z;
-            } else {
-                obs_intersect1 = direction.dot(obs.B);
-                obs_intersect2 = direction.dot(obs.C);
-                obs_distance1 = rob_planar_distances.y;
-                obs_distance2 = rob_planar_distances.z;
-            }
-
-            // get points of rob intersecting line
-            float rob_intersect1, rob_intersect2;
-            float rob_distance1, rob_distance2;
-            if ((obs_planar_distances.x > threshold && obs_planar_distances.y > threshold)
-                    || (obs_planar_distances.x < -threshold && obs_planar_distances.y < -threshold)){
-                rob_intersect1 = direction.dot(rob.A);
-                rob_intersect2 = direction.dot(rob.B);
-                rob_distance1 = obs_planar_distances.x;
-                rob_distance2 = obs_planar_distances.y; 
-            } else if ((obs_planar_distances.x > threshold && obs_planar_distances.y > threshold)
-                    || (obs_planar_distances.x < -threshold && obs_planar_distances.z < -threshold)){
-                rob_intersect1 = direction.dot(rob.A);
-                rob_intersect2 = direction.dot(rob.C);
-                rob_distance1 = obs_planar_distances.x;
-                rob_distance2 = obs_planar_distances.z;
-            } else {
-                rob_intersect1 = direction.dot(rob.B);
-                rob_intersect2 = direction.dot(rob.C);
-                rob_distance1 = obs_planar_distances.y;
-                rob_distance2 = obs_planar_distances.z;
-            }
-
-            // should probably refactor these above if statements so that this is a part of it
-            // get parameters such that intersection = obs_paramx * D
-            float obs_param1 = getParam(    obs_intersect1, obs_intersect2,
-                                            obs_distance1, obs_distance2);
-
-            float obs_param2 = getParam(    obs_intersect2, obs_intersect1,
-                                            obs_distance2, obs_distance1);
-
-            float rob_param1 = getParam(    rob_intersect1, rob_intersect2,
-                                            rob_distance1, rob_distance2);
-
-            float rob_param2 = getParam(    rob_intersect2, rob_intersect1,
-                                            rob_distance2, rob_distance1);
-
-            // swap so that 1 is smaller
-            if (obs_param1 > obs_param2) {
-                float tmp = obs_param2;
-                obs_param2 = obs_param1;
-                obs_param1 = tmp;
-            }
-            if (rob_param1 > rob_param2) {
-                float tmp = rob_param2;
-                rob_param2 = rob_param1;
-                rob_param1 = tmp;
-            }
-
-            if ( (obs_param2 < rob_param1) || obs_param1 > rob_param2) {
-                continue; // no collision
-            } else {
-                if (idx == 16){
-                    printf("Obstacle triangle %d is in collision with robot triangle %d \n", idx, i);
-                    printf("rob triangle: ");
-                    printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
-                        rob.A[0], rob.A[1], rob.A[2],
-                        rob.B[0], rob.B[1], rob.B[2],
-                        rob.C[0], rob.C[1], rob.C[2]);
-                    printf("distances from robot to obstacle plane: (%f, %f, %f)\n", 
-                        obs_planar_distances.x,
-                        obs_planar_distances.y,
-                        obs_planar_distances.z);
-                    printf("distances from obstacle to robot plane: (%f, %f, %f)\n", 
-                        rob_planar_distances.x,
-                        rob_planar_distances.y,
-                        rob_planar_distances.z);
-                }    
-                
-                has_collision = true;
+                // printf("Robot Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
+                //     rob.A[0], rob.A[1], rob.A[2],
+                //     rob.B[0], rob.B[1], rob.B[2],
+                //     rob.C[0], rob.C[1], rob.C[2]);
 
                 break;
             }
-
         }
         collisions[idx] = has_collision;
     }
@@ -736,11 +720,16 @@ namespace mpt_demo {
                 isValid = isValid && !host_collisions[i];
                 if (host_collisions[i]){
                     // int zero = 0;
-                    std::cout << "env_triangle " << i <<"collides ";
+                    // std::cout << "env_triangle " << i <<" collides\n";
                 }
             }
             // std::cout << isValid << std::endl;
-
+            // if (isValid){
+            //     std::cout << "no collisions for state " << q << std::endl;
+            // } 
+            // else {
+            //     std::cout << "there is a collision for state " << q << std::endl;
+            // }
             return isValid;
 
 

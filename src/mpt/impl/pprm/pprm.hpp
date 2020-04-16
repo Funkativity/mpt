@@ -156,7 +156,8 @@ namespace unc::robotics::mpt::impl::pprm {
         template <typename ... Args>
         void addStart(Args&& ... args) {
             Node *n = workers_[0].addSample(*this, State(std::forward<Args>(args)...), Component::kStart);
-
+            
+            assert (n != nullptr);
             assert(n->component()->isStart());
 
             std::lock_guard<std::mutex> lock(mutex_);

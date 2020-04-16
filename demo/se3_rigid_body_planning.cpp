@@ -211,8 +211,10 @@ void runPlanner(
         Scalar cost = 0;
         auto curr = path.begin();
         if (curr != path.end()) {
-            for (auto prev = curr ; ++curr != path.end() ; prev = curr)
+            for (auto prev = curr ; ++curr != path.end() ; prev = curr){
+                std::cout << *curr << std::endl;
                 cost += scenario.space().distance(*prev, *curr);
+            }
         }
         MPT_LOG(INFO) << "path cost " << cost;
 
