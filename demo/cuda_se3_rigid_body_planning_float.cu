@@ -33,7 +33,7 @@
 
 //! @author Jeff Ichnowski
 
-#include "cuda_se3_rigid_body_scenario.hpp"
+#include "cuda_se3_rigid_body_scenario_float.hpp"
 #include "scenario_config.hpp"
 #include "proc_info.hpp"
 #include <mpt/pprm.hpp>
