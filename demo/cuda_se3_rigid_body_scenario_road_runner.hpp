@@ -158,14 +158,51 @@ namespace mpt_demo::impl {
         Vec3 B;
         Vec3 C;
 
-        Triangle() {}
+        // maximum and minimum coordinates, for axis aligned bounding box (AABB) porpuses
+        float min[3];
+        float max[3];
+        
+        __host__ __device__ void update_aabb(){
+            
+            for (size_t i = 0; i < 3; i++){
+                float curr_min = A[i];
+                float curr_max = A[i];
 
+                if (curr_min > B[i]){
+                    curr_min = B[i];
+                }
+                
+                if (curr_max < B[i]){
+                    curr_max = B[i];
+                }
+
+                if (curr_min > C[i]){
+                    curr_min = C[i];
+                }
+
+                if (curr_max < C[i]){
+                    curr_max = C[i];
+                }
+
+                min[i] = curr_min;
+                max[i] = curr_max;
+            }
+        }
+
+        Triangle() {}
         __host__ __device__ Triangle(Vec3 vertex_a, Vec3 vertex_b, Vec3 vertex_c):
             A(vertex_a),
             B(vertex_b),
-            C(vertex_c) {}
+            C(vertex_c) {
+                update_aabb();
+            }
+        
+        __host__ __device__ bool aabbOverlap(Triangle other) {
+            return  (!(min[0] > other.max[0] || max[0] < other.min[0])) 
+                    &&  (!(min[1] > other.max[1] || max[1] < other.min[1])) 
+                    &&  (!(min[2] > other.max[2] || max[2] < other.min[2]));
 
-
+        }
     };
 
 
@@ -556,53 +593,153 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
         return 0;
     }
 
-    bool detect_collision_all_robot_host(impl::Triangle<float> *obstacles, int obs_size,
-            impl::Triangle<float> *robot, int rob_size, Eigen::Transform<float, 3, Eigen::Isometry> tf){
+    void detect_collision_all_robot_host(
+            impl::Triangle<float> *obstacles, size_t obs_size,
+            impl::Triangle<float> *robot, size_t rob_size,
+            bool *collisions, Eigen::Transform<float, 3, Eigen::Isometry> tf){
 
         float threshold = 0.0001f;
-        for (int i = 0; i < rob_size; i++){
-            impl::Triangle<float> pre_trans_rob = robot[i];
-            impl::Triangle<float> rob(  tf * pre_trans_rob.A,
-                                        tf * pre_trans_rob.B,
-                                        tf * pre_trans_rob.C);
 
 
-
-            float rob_center_vertex[] = {rob.A[0], rob.A[1], rob.A[2]};
-            float rob_edge_B[] =      {rob.B[0] - rob.A[0], rob.B[1] - rob.A[1], rob.B[2] - rob.A[2]};
-            float rob_edge_C[] =      {rob.C[0] - rob.A[0], rob.C[1] - rob.A[1], rob.C[2] - rob.A[2]};
-
-
-            for (size_t j = 0; j < obs_size ; j++){
-                impl::Triangle<float> obs = obstacles[j];
-                Vec3 obs_vec1 = obs.B - obs.A;
-                Vec3 obs_vec2 = obs.C - obs.A;
+        for (size_t idx = 0; idx < obs_size ; idx++){
+            impl::Triangle<float> obs = obstacles[idx];
+            Vec3 obs_vec1 = obs.B - obs.A;
+            Vec3 obs_vec2 = obs.C - obs.A;
 
 
-                Vec3 obs_norm = obs_vec1.cross(obs_vec2);
+            Vec3 obs_norm = obs_vec1.cross(obs_vec2);
 
-                // scalar that satisfies obs_norm * X + obs_d = 0dot
-                float obs_d = -1 * obs_norm.dot(obs.A);
+            // scalar that satisfies obs_norm * X + obs_d = 0dot
+            float obs_d = -1 * obs_norm.dot(obs.A);
 
-                // case where vertices of a 'triangle' are colinear- ignore collision
-                // todo, do line intersection test with triangle
-                if (fabsf(obs_norm[0]) < threshold && fabsf(obs_norm[1]) < threshold && fabsf(obs_norm[2]) < threshold){
+            // case where vertices of a 'triangle' are colinear- ignore collision
+            // todo, do line intersection test with triangle
+            if (fabsf(obs_norm[0]) < threshold && fabsf(obs_norm[1]) < threshold && fabsf(obs_norm[2]) < threshold){
+                collisions[idx] = false;
+
+                return;
+            }
+
+
+            float obs_center_vertex[] = {obs.A[0], obs.A[1], obs.A[2]};
+            float obs_edge_B[] =      {obs.B[0] - obs.A[0], obs.B[1] - obs.A[1], obs.B[2] - obs.A[2]};
+            float obs_edge_C[] =      {obs.C[0] - obs.A[0], obs.C[1] - obs.A[1], obs.C[2] - obs.A[2]};
+            //test for intersection against all robot triangles
+            ////////////////////////////////////////////////////////////////////////
+            bool has_collision = false;
+            for (int i = 0; i < rob_size; i++){
+                impl::Triangle<float> pre_trans_rob = robot[i];
+                impl::Triangle<float> rob(  tf * pre_trans_rob.A,
+                                            tf * pre_trans_rob.B,
+                                            tf * pre_trans_rob.C);
+
+                // preliminary check to see if the triangles axis-aligned bounding boxes intersect
+                if (!rob.aabbOverlap(obs)){
                     continue;
                 }
 
-
-                float obs_center_vertex[] = {obs.A[0], obs.A[1], obs.A[2]};
-                float obs_edge_B[] =      {obs.B[0] - obs.A[0], obs.B[1] - obs.A[1], obs.B[2] - obs.A[2]};
-                float obs_edge_C[] =      {obs.C[0] - obs.A[0], obs.C[1] - obs.A[1], obs.C[2] - obs.A[2]};
+                float rob_center_vertex[] = {rob.A[0], rob.A[1], rob.A[2]};
+                float rob_edge_B[] =      {rob.B[0] - rob.A[0], rob.B[1] - rob.A[1], rob.B[2] - rob.A[2]};
+                float rob_edge_C[] =      {rob.C[0] - rob.A[0], rob.C[1] - rob.A[1], rob.C[2] - rob.A[2]};
 
                 if (tr_tri_intersect3D      (obs_center_vertex, obs_edge_B, obs_edge_C,
-                                                rob_center_vertex, rob_edge_B, rob_edge_C)){
-                    return true;
+                                             rob_center_vertex, rob_edge_B, rob_edge_C)){
+                    has_collision=true;
+                    collisions[idx] = has_collision;
+                    return;
+
+                    printf("Robot Triangle %d: \n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \nintersects triangle\n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)}\n with rob AABB \n{(%f, %f, %f), (%f, %f, %f)}\n and obs AABB \n{(%f, %f, %f), (%f, %f, %f)}\n", i,
+                        rob_center_vertex[0], rob_center_vertex[1], rob_center_vertex[2],
+                        rob_edge_B[0], rob_edge_B[1], rob_edge_B[2],
+                        rob_edge_C[0], rob_edge_C[1], rob_edge_C[2],
+                        obs_center_vertex[0], obs_center_vertex[1], obs_center_vertex[2],
+                        obs_edge_B[0], obs_edge_B[1], obs_edge_B[2],
+                        obs_edge_C[0], obs_edge_C[1], obs_edge_C[2],
+                        rob.min[0], rob.min[1], rob.min[2],
+                        rob.max[0], rob.max[1], rob.max[2],
+                        obs.min[0], obs.min[1], obs.min[2],
+                        obs.max[0], obs.max[1], obs.max[2]);
+                    break;
                 }
             }
+            collisions[idx] = has_collision;
         }
-        return false;
+
     }
+
+
+    // TODO: change indexing so every thread in a warp has the same robot triangle
+    // single triangle triangle collision detection
+    __global__  void detect_collision_one_robot_tri(
+            impl::Triangle<float> *obstacles, size_t obs_size,
+            impl::Triangle<float> *robot, size_t rob_size,
+            bool *collisions, Eigen::Transform<float, 3, Eigen::Isometry> tf){
+
+        int global_index = threadIdx.x + blockIdx.x * blockDim.x;
+        // int warp_size = 32;
+        // int inflated_rob_size = rob_size + 32 - (rob_size % 32);
+        // int obs_idx = global_index / inflated_rob_size;
+        // int rob_idx = global_index % inflated_rob_size;
+        int obs_idx = global_index / rob_size;
+        int rob_idx = global_index % rob_size;
+        // edge case where thread doesn't matter
+        if (obs_idx >= obs_size){
+            return;
+        }
+        
+        if (rob_idx >= rob_size){
+            return;
+        }
+
+        int collision_idx = obs_idx * rob_size + rob_idx;
+
+        impl::Triangle<float> obs = obstacles[obs_idx];
+
+
+        float obs_center_vertex[] = {obs.A[0], obs.A[1], obs.A[2]};
+        float obs_edge_B[] =      {obs.B[0] - obs.A[0], obs.B[1] - obs.A[1], obs.B[2] - obs.A[2]};
+        float obs_edge_C[] =      {obs.C[0] - obs.A[0], obs.C[1] - obs.A[1], obs.C[2] - obs.A[2]};
+
+        float rob_center_vertex[3];
+        float rob_edge_B[3];
+        float rob_edge_C[3];
+        //test for intersection against all robot triangles
+        ////////////////////////////////////////////////////////////////////////
+        bool has_collision = false;
+        impl::Triangle<float> pre_trans_rob = robot[rob_idx];
+        impl::Triangle<float> rob(  tf * pre_trans_rob.A,
+                                    tf * pre_trans_rob.B,
+                                    tf * pre_trans_rob.C);
+
+
+        // preliminary check to see if the triangles axis-aligned bounding boxes intersect
+        if (rob.aabbOverlap(obs)){
+            rob_center_vertex[0] = rob.A[0];
+            rob_center_vertex[1] = rob.A[1];
+            rob_center_vertex[2] = rob.A[2];
+
+            rob_edge_B[0] = rob.B[0] - rob.A[0];
+            rob_edge_B[1] = rob.B[1] - rob.A[1];
+            rob_edge_B[2] = rob.B[2] - rob.A[2];
+            
+            rob_edge_C[0] = rob.C[0] - rob.A[0];
+            rob_edge_C[1] = rob.C[1] - rob.A[1];
+            rob_edge_C[2] = rob.C[2] - rob.A[2];
+
+            if (tr_tri_intersect3D (obs_center_vertex, obs_edge_B, obs_edge_C,
+                                    rob_center_vertex, rob_edge_B, rob_edge_C)){
+                has_collision=true;
+            }
+        }
+        if (has_collision){
+            collisions[0] = has_collision;
+        }
+    }
+
+
+
+
+
 
     // one environment triangle vs all robot triangles
     // void detect_collision_all_robot(
@@ -640,28 +777,33 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
 
         // calculate normal for our obstacle triangle
         ////////////////////////////////////////////////////////////////////////
+        
 
-        Vec3 obs_vec1 = obs.B - obs.A;
-        Vec3 obs_vec2 = obs.C - obs.A;
+        // Vec3 obs_vec1 = obs.B - obs.A;
+        // Vec3 obs_vec2 = obs.C - obs.A;
 
 
-        Vec3 obs_norm = obs_vec1.cross(obs_vec2);
+        // Vec3 obs_norm = obs_vec1.cross(obs_vec2);
 
-        // scalar that satisfies obs_norm * X + obs_d = 0dot
-        float obs_d = -1 * obs_norm.dot(obs.A);
+        // // scalar that satisfies obs_norm * X + obs_d = 0dot
+        // float obs_d = -1 * obs_norm.dot(obs.A);
 
-        // case where vertices of a 'triangle' are colinear- ignore collision
-        // todo, do line intersection test with triangle
-        if (fabsf(obs_norm[0]) < threshold && fabsf(obs_norm[1]) < threshold && fabsf(obs_norm[2]) < threshold){
-            collisions[idx] = false;
+        // // case where vertices of a 'triangle' are colinear- ignore collision
+        // // todo, do line intersection test with triangle
+        // if (fabsf(obs_norm[0]) < threshold && fabsf(obs_norm[1]) < threshold && fabsf(obs_norm[2]) < threshold){
+        //     collisions[idx] = false;
 
-            return;
-        }
+        //     return;
+        // }
 
 
         float obs_center_vertex[] = {obs.A[0], obs.A[1], obs.A[2]};
         float obs_edge_B[] =      {obs.B[0] - obs.A[0], obs.B[1] - obs.A[1], obs.B[2] - obs.A[2]};
         float obs_edge_C[] =      {obs.C[0] - obs.A[0], obs.C[1] - obs.A[1], obs.C[2] - obs.A[2]};
+
+        float rob_center_vertex[3];
+        float rob_edge_B[3];
+        float rob_edge_C[3];
         //test for intersection against all robot triangles
         ////////////////////////////////////////////////////////////////////////
         bool has_collision = false;
@@ -672,27 +814,43 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
                                         tf * pre_trans_rob.C);
 
 
+            // preliminary check to see if the triangles axis-aligned bounding boxes intersect
+            if (!rob.aabbOverlap(obs)){
+                continue;
+            }
+            rob_center_vertex[0] = rob.A[0];
+            rob_center_vertex[1] = rob.A[1];
+            rob_center_vertex[2] = rob.A[2];
 
-            float rob_center_vertex[] = {rob.A[0], rob.A[1], rob.A[2]};
-            float rob_edge_B[] =      {rob.B[0] - rob.A[0], rob.B[1] - rob.A[1], rob.B[2] - rob.A[2]};
-            float rob_edge_C[] =      {rob.C[0] - rob.A[0], rob.C[1] - rob.A[1], rob.C[2] - rob.A[2]};
+            rob_edge_B[0] = rob.B[0] - rob.A[0];
+            rob_edge_B[1] = rob.B[1] - rob.A[1];
+            rob_edge_B[2] = rob.B[2] - rob.A[2];
+            
+            rob_edge_C[0] = rob.C[0] - rob.A[0];
+            rob_edge_C[1] = rob.C[1] - rob.A[1];
+            rob_edge_C[2] = rob.C[2] - rob.A[2];
 
             if (tr_tri_intersect3D      (obs_center_vertex, obs_edge_B, obs_edge_C,
                                          rob_center_vertex, rob_edge_B, rob_edge_C)){
                 has_collision=true;
-
-                // printf("Robot Triangle %d: \n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \nintersects env triangle %d\n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)}\n", i,
+                break;
+                // printf("Robot Triangle %d: \n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \nintersects triangle\n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)}\n with rob AABB \n{(%f, %f, %f), (%f, %f, %f)}\n and obs AABB \n{(%f, %f, %f), (%f, %f, %f)}\n", i,
                 //     rob_center_vertex[0], rob_center_vertex[1], rob_center_vertex[2],
                 //     rob_edge_B[0], rob_edge_B[1], rob_edge_B[2],
                 //     rob_edge_C[0], rob_edge_C[1], rob_edge_C[2],
-                //     idx,
                 //     obs_center_vertex[0], obs_center_vertex[1], obs_center_vertex[2],
                 //     obs_edge_B[0], obs_edge_B[1], obs_edge_B[2],
-                //     obs_edge_C[0], obs_edge_C[1], obs_edge_C[2]);
-                break;
+                //     obs_edge_C[0], obs_edge_C[1], obs_edge_C[2],
+                //     rob.min[0], rob.min[1], rob.min[2],
+                //     rob.max[0], rob.max[1], rob.max[2],
+                //     obs.min[0], obs.min[1], obs.min[2],
+                //     obs.max[0], obs.max[1], obs.max[2]);
+                // break;
             }
         }
-        collisions[idx] = has_collision;
+        if (has_collision){
+            collisions[0] = true;
+        }
     }
 
 
@@ -728,7 +886,7 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
         // pointer to avoid copying the environment and robot meshes.
         std::shared_ptr<impl::Mesh<Scalar>> environment_;
         std::shared_ptr<std::vector<impl::Mesh<Scalar>>> robot_;
-
+        bool *m_d_collisions;
         Space space_;
         Bounds bounds_;
 
@@ -745,7 +903,6 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
         // the collision detection function
         // is called in prrt.hpp or pprm.hpp or whatever algorithm this is compiled to use
         bool valid(const Config& q) const {
-
             int num_env_triangles = environment_->host_triangles_.size();
 
             if (robot_->size() > 1){
@@ -753,81 +910,46 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
             }
             size_t num_rob_triangles = (*robot_)[0].host_triangles_.size();
 
-
             Transform tf = stateToTransform(q);
-            return !detect_collision_all_robot_host( environment_->host_triangles_.data(), num_env_triangles,
-                                                    (*robot_)[0].host_triangles_.data(), num_rob_triangles, tf);
-            // cudaMalloc((void **) &d_collisions, sizeof(bool) * num_env_triangles);
-
-            // size_t block_size = 256;
-            // size_t numBlocks = num_env_triangles / block_size +1;
 
 
-            // for (int i = 0; i < num_rob_triangles; i++){
+            size_t block_size = 256;
 
-            //     printf("Triangle %d: {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n ", i,
-            //                         (*robot_)[0].host_triangles_[i].A[0], (*robot_)[0].host_triangles_[i].A[1], (*robot_)[0].host_triangles_[i].A[2],
-            //                         (*robot_)[0].host_triangles_[i].B[0], (*robot_)[0].host_triangles_[i].B[1], (*robot_)[0].host_triangles_[i].B[2],
-            //                         (*robot_)[0].host_triangles_[i].C[0], (*robot_)[0].host_triangles_[i].C[1], (*robot_)[0].host_triangles_[i].C[2]);
-            // }
+            bool host_collision = false;
+            cudaMemcpy(m_d_collisions, &host_collision,sizeof(bool), cudaMemcpyHostToDevice);
 
-            // cudaDeviceSynchronize();
-            // // detect_collision_all_robot_host(&(environment_->host_triangles_[0]), num_env_triangles,
-            // //                                 &((*robot_)[0].host_triangles_[0]), num_rob_triangles,
-            // //                                 host_collisions, tf);
-            // detect_collision_all_robot<<< numBlocks, 256>>>(  environment_->d_triangles_, num_env_triangles,
+
+            cudaDeviceSynchronize();
+            size_t numBlocks = num_env_triangles / block_size +1;
+            detect_collision_all_robot<<< numBlocks, 256>>>(  environment_->d_triangles_, num_env_triangles,
+                                                    (*robot_)[0].d_triangles_, num_rob_triangles,
+                                                    m_d_collisions, tf);
+            
+            // size_t numBlocks = ((num_env_triangles * num_rob_triangles) / block_size) +1;
+            // detect_collision_one_robot_tri<<< numBlocks, 256>>>(  environment_->d_triangles_, num_env_triangles,
             //                                         (*robot_)[0].d_triangles_, num_rob_triangles,
-            //                                         d_collisions, tf);
-            // cudaDeviceSynchronize();
+            //                                         m_d_collisions, tf);
+            cudaDeviceSynchronize();
 
-            // cudaMemcpy(host_collisions, d_collisions, num_env_triangles * sizeof(bool), cudaMemcpyDeviceToHost);
-            // cudaDeviceSynchronize();
-
-            // bool isValid = true;
-            // for (int i = 0; i <num_env_triangles; i ++){
-            //     isValid = isValid && !host_collisions[i];
-            //     // if (host_collisions[i]){
-            //     //     int zero = 0;
-            //     //     // std::cout << "env_triangl-e " << i <<" collides\n";
-            //     // }
-            // }
-            // // std::cout << isValid << std::endl;
-            // // if (isValid){
-            // //     std::cout << "no collisions for state " << q << std::endl;
-            // // }
-            // // else {
-            // //     std::cout << "there is a collision for state " << q << std::endl;
-            // // }
-            // return isValid;
+            cudaMemcpy(&host_collision, m_d_collisions, sizeof(bool), cudaMemcpyDeviceToHost);
+            cudaDeviceSynchronize();
 
 
+            return host_collision;
+
+            // TODO - test on Easy ~ .024 seconds, cubicles ~ 0.5 seconds, and Home ~ 2.5 seconds
             // TODO - write to a single global flag instead of an array of collisions
             // TODO - have each CUDA thread check a single triangle triangle, instead of
             //        all triangles in a robot
             // TODO - check the collisions in a loop instead of using cudaDeviceSynchronize, continuing
-            //        whenever we've determined there's a collision0\
+            //        whenever we've determined there's a collision
             // TODO - initialize vector of bools in construction of scenario, to avoid excessive calls
             //        to cudaMalloc and CUDA free
             // TODO - precompute norms for environment / robot, transform as necessary.
         }
 
-        // // TODO make this use use some cuda algorithm
-        // std::vector<bool> validBatch(const std::vector<Config> qs) const {
-        //     std::vector<Transform> tfs[robot_->size()];
-        //     std::vector<bool> collisions[robot_->size()];
 
-        //     for (const auto& q : qs) {
-        //         for (const auto& robot : *robot_) {
-        //             for (size_t j = 0)
-        //             // consider doing the "state to transform" within the gpu
-        //             // could calculate the transform on cpu for one robot point, send a batch, calculate the next transform, send another batch, etc
-        //             // ^ that's a good idea, i like it.
-        //             Transform tf = stateToTransform(q);
-        //         }
-        //     }
 
-        //     return collisions;
-        // }
 
 
     private:
@@ -855,10 +977,19 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
             for (const std::string& mesh : robotMeshes) {
                 robot_->emplace_back(mesh, true);
             }
+
+            cudaMalloc((void **) &m_d_collisions, sizeof(bool));
+
             MPT_LOG(DEBUG) << "Volume min: " << min.transpose();
             MPT_LOG(DEBUG) << "Volume max: " << max.transpose();
+            // MPT_LOG(DEBUG) << "state type: " << log::type_name<State>()
         }
 
+        ~SE3RigidBodyScenario(){
+            // if (m_d_collisions)
+            // delete m_host_collisions;
+            cudaFree(m_d_collisions);
+        }
         const Space& space() const {
             return space_;
         }

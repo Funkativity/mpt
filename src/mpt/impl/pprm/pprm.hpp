@@ -147,6 +147,8 @@ namespace unc::robotics::mpt::impl::pprm {
         {
             MPT_LOG(TRACE) << "Using nearest: " << log::type_name<NNStrategy>();
             MPT_LOG(TRACE) << "Using sampler: " << log::type_name<Sampler>();
+            MPT_LOG(TRACE) << "Using state: " << log::type_name<State>();
+            // MPT_LOG(TRACE) << "USING seed: " << seed;
         }
 
         std::size_t size() const {
@@ -277,7 +279,7 @@ namespace unc::robotics::mpt::impl::pprm {
         Worker(unsigned no, const Scenario& scenario, const RNGSeed& seed)
             : no_(no)
             , scenario_(scenario)
-            , rng_(0)
+            , rng_(seed)
         {
         }
 

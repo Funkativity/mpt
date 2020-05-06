@@ -50,6 +50,9 @@
 #include <mpt/uniform_sampler.hpp>
 #include <nigh/kdtree_batch.hpp>
 
+#include <thread>
+#include <chrono>
+
 namespace mpt_demo::impl {
     static constexpr std::intmax_t SO3_WEIGHT = 50;
 
@@ -292,8 +295,10 @@ namespace mpt_demo {
             for (const auto& robot : *robot_) {
                 // for (std::size_t i=0 ; i<robot_->size() ; ++i) {
                 Transform tf = stateToTransform(q); // TODO: get the ith state
-                if (fcl::collide(robot.geom(), tf, environment_->geom(), Transform::Identity(), req, res))
+                if (fcl::collide(robot.geom(), tf, environment_->geom(), Transform::Identity(), req, res)){
+                    std::cout << "state " << q << " was invalid\n";
                     return false;
+                }
             }
 
             // TODO: when multibody is supported
@@ -348,10 +353,46 @@ namespace mpt_demo {
             return bounds_;
         }
 
-        // template <typename RNG>
-        // std::optional<State> sample(RNG& rng) {
-        //     return {};
-        // }
+        int sample_index = 0;
+        template <typename RNG>
+        std::optional<State> sample(RNG& rng) {
+            std::vector<State> states(9);
+            states[0].translation() =   {231.138, 51.3338,    68.1198};
+            states[0].rotation() =      { -0.247842, -0.131271,  -0.77228,   -0.570023};
+            // std::cout <<states[0] <<std::endl;
+            states[1].translation() =   {200.34,    29.9335, 70.4491};
+            states[1].rotation() =      {-0.265337, -0.736365,     -0.567313,  -0.255968};
+// /
+            states[2].translation() =   {165.458, 25.8259, 74.6233};
+            states[2].rotation() =      { 0.0599174, 0.401037   , 0.832058,   0.378495};
+// 
+            states[3].translation() =   { 145.657, -9.58966,  43.8813};
+            states[3].rotation() =      { -0.154104, -0.147821   ,-0.705386,  -0.675893};
+// 
+            states[4].translation() =   { 114.973, -40.8842,  43.2471};
+            states[4].rotation() =      {-0.276114, -0.132924   ,-0.675115,  -0.671053};
+// 
+            states[5].translation() =   { 100.179, -53.7761,  40.0443};
+            states[5].rotation() =      {-0.363421, -0.236844   ,-0.641195,  -0.633008};
+// 
+            states[6].translation() =   { 58.2569, -82.7014,   67.494};
+            states[6].rotation() =      {0.226581, 0.257811, 0.691536, 0.635588};
+// 
+            states[7].translation() =   {11.1913, -83.639, 71.0146};
+            states[7].rotation() =      {-0.239398, -0.253053   ,-0.697554,  -0.626155};
+// 
+            states[8].translation() = {-10.2404, -99.5088,  66.8565};
+            states[8].rotation() = { -0.163401,0.155474   , 0.560459,   0.796878};
+// 
+            // states[9].translation() = {-31.19, -99.85,  36.46};
+            // states[9].rotation() = {         0  ,         ,  0  -0.999962 0.00872656};
+
+            if (sample_index >8){
+                sample_index =0;
+            }
+            // std::cout << "Test state is " << test;
+            return states[sample_index++];
+        }
 
         const Goal& goal() const {
             return goal_;

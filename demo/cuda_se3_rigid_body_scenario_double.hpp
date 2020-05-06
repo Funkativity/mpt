@@ -265,8 +265,8 @@ namespace mpt_demo {
 
     // CUDA helper functions
     //////////////////////////////////////////////////////////////////////////////////
-__device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],float V2[3],
-                     float U0[3],float U1[3],float U2[3]);
+__device__ int coplanar_tri_tri(double N[3],double V0[3],double V1[3],double V2[3],
+                     double U0[3],double U1[3],double U2[3]);
 
 // some vector macros
 
@@ -301,43 +301,39 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
         g[2] = v2[2]-v1[2];\
         }\
 
+
     // 2D intersection of segment and triangle.
-    //  Q = {0,0, -150,000,000}
-    // r = (-7, 39, -25) * 10,000,000
     #define seg_collide3( q, r)\
     {\
         p1[0]=SF*P1[0];\
         p1[1]=SF*P1[1];\
         p2[0]=SF*P2[0];\
         p2[1]=SF*P2[1];\
-        det1 = p1[0]*q[1]-q[0]*p1[1]; /*det1 = 0 */ \
-        det1_sign = det1>=-THRESHOLD? 1:-1;\
-        gama1 = (p1[0]*r[1]-r[0]*p1[1])*det1_sign;\
-        alpha1 = (r[0]*q[1] - q[0]*r[1])*det1_sign;\
-        alpha1_legal = (alpha1>= 0) && (alpha1<=(FABS(det1))  && (FABS(det1) > THRESHOLD));\
+        det1 = p1[0]*q[1]-q[0]*p1[1];\
+        gama1 = (p1[0]*r[1]-r[0]*p1[1])*det1;\
+        alpha1 = (r[0]*q[1] - q[0]*r[1])*det1;\
+        alpha1_legal = (alpha1>=0) && (alpha1<=(det1*det1)  && (det1!=0));\
         det2 = p2[0]*q[1] - q[0]*p2[1];\
-        det2_sign = det2>=-THRESHOLD? 1:-1;\
-        alpha2 = (r[0]*q[1] - q[0]*r[1]) *det2_sign;\
-        gama2 = (p2[0]*r[1] - r[0]*p2[1]) * det2_sign;\
-        alpha2_legal = (alpha2>= 0) && (alpha2<=(FABS(det2)) && (FABS(det2) > THRESHOLD));\
+        alpha2 = (r[0]*q[1] - q[0]*r[1]) *det2;\
+        gama2 = (p2[0]*r[1] - r[0]*p2[1]) * det2;\
+        alpha2_legal = (alpha2>=0) && (alpha2<=(det2*det2) && (det2 !=0));\
         det3=det2-det1;\
-        det3_sign = det3>=-THRESHOLD? 1:-1;\
-        gama3=((p2[0]-p1[0])*(r[1]-p1[1]) - (r[0]-p1[0])*(p2[1]-p1[1]))*det3_sign;\
+        gama3=((p2[0]-p1[0])*(r[1]-p1[1]) - (r[0]-p1[0])*(p2[1]-p1[1]))*det3;\
         if (alpha1_legal)\
         {\
             if (alpha2_legal)\
             {\
-                if ( ((gama1<= 0) && (gama1>=-(FABS(det1)))) || ((gama2<= 0) && (gama2>=-(FABS(det2)))) || (gama1*gama2< 0)) return 12;\
+                if ( ((gama1<=0) && (gama1>=-(det1*det1))) || ((gama2<=0) && (gama2>=-(det2*det2))) || (gama1*gama2<0)) return 12;\
             }\
             else\
             {\
-                if ( ((gama1<= 0) && (gama1>=-(FABS(det1)))) || ((gama3<= 0) && (gama3>=-(FABS(det3)))) || (gama1*gama3< 0)) return 13;\
+                if ( ((gama1<=0) && (gama1>=-(det1*det1))) || ((gama3<=0) && (gama3>=-(det3*det3))) || (gama1*gama3<0)) return 13;\
                 }\
         }\
         else\
         if (alpha2_legal)\
         {\
-            if ( ((gama2<= 0) && (gama2>=-(FABS(det2)))) || ((gama3<= 0) && (gama3>=-(FABS(det3)))) || (gama2*gama3< 0)) return 23;\
+            if ( ((gama2<=0) && (gama2>=-(det2*det2))) || ((gama3<=0) && (gama3>=-(det3*det3))) || (gama2*gama3<0)) return 23;\
             }\
         return 0;\
         }
@@ -347,86 +343,75 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
 
     //main procedure
 
-    __device__ __host__ int tr_tri_intersect3D (float C1[3], float P1[3], float P2[3],
-            float D1[3], float Q1[3], float Q2[3])
+    __device__ int tr_tri_intersect3D (double C1[3], double P1[3], double P2[3],
+            double D1[3], double Q1[3], double Q2[3])
     {
-        float  t[3],p1[3], p2[3],r[3],r4[3];
-        float beta1, beta2, beta3;
-        float gama1, gama2, gama3;
-        float det1, det2, det3;
-        float det1_sign, det2_sign, det3_sign;
-        float dp0, dp1, dp2;
-        float dq1,dq2,dq3,dr, dr3;
-        float alpha1, alpha2;
+        double  t[3],p1[3], p2[3],r[3],r4[3];
+        double beta1, beta2, beta3;
+        double gama1, gama2, gama3;
+        double det1, det2, det3;
+        double dp0, dp1, dp2;
+        double dq1,dq2,dq3,dr, dr3;
+        double alpha1, alpha2;
         bool alpha1_legal, alpha2_legal;
-        float  SF;
+        double  SF;
         bool beta1_legal, beta2_legal;
-
+                
         myVmV(r,D1,C1);
-        // determinant computation
-        dp0 = P1[1]*P2[2]-P2[1]*P1[2]; // 0
-        dp1 = P1[0]*P2[2]-P2[0]*P1[2]; // dp1 = -1000
-        dp2 = P1[0]*P2[1]-P2[0]*P1[1]; // 0
-        dq1 = Q1[0]*dp0 - Q1[1]*dp1 + Q1[2]*dp2; // dq1 = 100,000
-        dq2 = Q2[0]*dp0 - Q2[1]*dp1 + Q2[2]*dp2; // 0
-        dr  = -r[0]*dp0  + r[1]*dp1  - r[2]*dp2; // dr = 40,000
+        // determinant computation	
+        dp0 = P1[1]*P2[2]-P2[1]*P1[2];
+        dp1 = P1[0]*P2[2]-P2[0]*P1[2];
+        dp2 = P1[0]*P2[1]-P2[0]*P1[1];
+        dq1 = Q1[0]*dp0 - Q1[1]*dp1 + Q1[2]*dp2;
+        dq2 = Q2[0]*dp0 - Q2[1]*dp1 + Q2[2]*dp2;
+        dr  = -r[0]*dp0  + r[1]*dp1  - r[2]*dp2;
 
+        
+        
+        beta1 = dr*dq2;  // beta1, beta2 are scaled so that beta_i=beta_i*dq1*dq2
+        beta2 = dr*dq1;
+        beta1_legal = (beta2>=0) && (beta2 <=dq1*dq1) && (dq1 != 0);
+        beta2_legal = (beta1>=0) && (beta1 <=dq2*dq2) && (dq2 != 0);
+            
+        dq3=dq2-dq1;
+        dr3=+dr-dq1;   // actually this is -dr3
+        
 
-
-        beta1 = dr*dq2;  // beta1, beta2 are scaled so that beta_i=beta_i*dq1*dq2 // 0
-        beta2 = dr*dq1; // 4,000,000,000
-        beta1_legal = (beta2>= 0) && (beta2 <=dq1*dq1) && (dq1 != 0); // true
-        beta2_legal = (beta1>= 0) && (beta1 <=dq2*dq2) && (dq2 != 0); // false
-
-        dq3=dq2-dq1; //-100,000
-        dr3=+dr-dq1;   // actualy this is -dr3 // -60,000
-
-
-        if ((FABS(dq1) < THRESHOLD) && ( FABS(dq2) < THRESHOLD))
+        if ((dq1 == 0) && (dq2 == 0))
         {
-            if (dr != 0) return 0;  // triangles are on parallel planes
+            if (dr!=0) return 0;  // triangles are on parallel planes
             else
             {						// triangles are on the same plane
-                float C2[3],C3[3],D2[3],D3[3], N1[3];
-                // We use the coplanar test of Moller which takes the 6 vertices and 2 normals
+                double C2[3],C3[3],D2[3],D3[3], N1[3];
+                // We use the coplanar test of Moller which takes the 6 vertices and 2 normals  
                 //as input.
                 myVpV(C2,C1,P1);
                 myVpV(C3,C1,P2);
                 myVpV(D2,D1,Q1);
                 myVpV(D3,D1,Q2);
                 CROSS(N1,P1,P2);
-                if (coplanar_tri_tri(N1,C1, C2,C3,D1,D2,D3)){
-                    // printf("Env triangle: \n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n colllides with Rob triangle\n {(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \n",
-                    //         C1[0], C1[1], C1[2],
-                    //         P1[0], P1[1], P1[2],
-                    //         P2[0], P2[1], P2[2],
-                    //         D1[0], D1[1], D1[2],
-                    //         Q1[0], Q1[1], Q1[2],
-                    //         Q2[0], Q2[1], Q2[2]);
-                    return true;
-                };
-                return false;
+                return coplanar_tri_tri(N1,C1, C2,C3,D1,D2,D3);
             }
         }
 
-        else if (!beta2_legal && !beta1_legal) return 0;// fast reject -- all vertices are on
+        else if (!beta2_legal && !beta1_legal) return 0;// fast reject-all vertices are on
                                                         // the same side of the triangle plane
+
 
         else if (beta2_legal && beta1_legal)    //beta1, beta2
         {
             SF = dq1*dq2;
-            // printf("beta1, beta2"))
             sVpsV_2(t,beta2,Q2, (-beta1),Q1);
         }
-
+        
         else if (beta1_legal && !beta2_legal)   //beta1, beta3
         {
-            SF = dq1*dq3; // -10,000,000,000
-            beta1 =beta1-beta2;   // all betas are multiplied by a positive SF // -4,000,000
-            beta3 =dr3*dq1; // -6,000,000,000
-            sVpsV_2(t,(SF-beta3-beta1),Q1,beta3,Q2); //t = -6,000,000 * Q2
+            SF = dq1*dq3;
+            beta1 =beta1-beta2;   // all betas are multiplied by a positive SF
+            beta3 =dr3*dq1;
+            sVpsV_2(t,(SF-beta3-beta1),Q1,beta3,Q2);
         }
-
+        
         else if (beta2_legal && !beta1_legal) //beta2, beta3
         {
             SF = dq2*dq3;
@@ -436,8 +421,8 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
             Q1=Q2;
             beta1=beta2;
         }
-        sVpsV_2(r4,SF,r,beta1,Q1); // r4 {0, D1[1] - C1[1], undefined \ 0}  * 10,000,000 
-        seg_collide3(t,r4);  // calculates the 2D intersection // t = Q2 * -6,000,000 // r4 = (D1 - C1) * 10,000,000
+        sVpsV_2(r4,SF,r,beta1,Q1);
+        seg_collide3(t,r4);  // calculates the 2D intersection
         return 0;
     }
 
@@ -445,7 +430,6 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
     "Faster Line Segment Intersection", in Graphics Gems III,
     pp. 199-202 */
     #define FABS(x) (x>=0?x:-x)        /* implement as is fastest on your machine */
-
     #define EDGE_EDGE_TEST(V0,U0,U1)                      \
     Bx=U0[i0]-U1[i0];                                   \
     By=U0[i1]-U1[i1];                                   \
@@ -453,22 +437,22 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
     Cy=V0[i1]-U0[i1];                                   \
     f=Ay*Bx-Ax*By;                                      \
     d=By*Cx-Bx*Cy;                                      \
-    if((f>THRESHOLD && d>= THRESHOLD && d<=f) || (f< -THRESHOLD && d<= -THRESHOLD && d>=f))  \
+    if((f>0 && d>=0 && d<=f) || (f<0 && d<=0 && d>=f))  \
     {                                                   \
         e=Ax*Cy-Ay*Cx;                                    \
-        if(f>THRESHOLD)                                           \
+        if(f>0)                                           \
         {                                                 \
-        if(e>= THRESHOLD && e<=f) return 1;                      \
+        if(e>=0 && e<=f) return 1;                      \
         }                                                 \
         else                                              \
         {                                                 \
-        if(e<= -THRESHOLD && e>=f) return 1;                      \
+        if(e<=0 && e>=f) return 1;                      \
         }                                                 \
-    }
+    }                                
 
     #define EDGE_AGAINST_TRI_EDGES(V0,V1,U0,U1,U2) \
     {                                              \
-    float Ax,Ay,Bx,By,Cx,Cy,e,d,f;               \
+    double Ax,Ay,Bx,By,Cx,Cy,e,d,f;               \
     Ax=V1[i0]-V0[i0];                            \
     Ay=V1[i1]-V0[i1];                            \
     /* test edge U0,U1 against V0,V1 */          \
@@ -481,7 +465,7 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
 
     #define POINT_IN_TRI(V0,U0,U1,U2)           \
     {                                           \
-    float a,b,c,d0,d1,d2;                     \
+    double a,b,c,d0,d1,d2;                     \
     /* is T1 completly inside T2? */          \
     /* check if V0 is inside tri(U0,U1,U2) */ \
     a=U1[i1]-U0[i1];                          \
@@ -498,19 +482,19 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
     b=-(U0[i0]-U2[i0]);                       \
     c=-a*U2[i0]-b*U2[i1];                     \
     d2=a*V0[i0]+b*V0[i1]+c;                   \
-    if(d0*d1>THRESHOLD)                             \
+    if(d0*d1>0.0)                             \
     {                                         \
-        if(d0*d2>THRESHOLD) return 1;                 \
+        if(d0*d2>0.0) return 1;                 \
     }                                         \
     }
 
     //This procedure testing for intersection between coplanar triangles is taken
     // from Tomas Moller's
     //"A Fast Triangle-Triangle Intersection Test",Journal of Graphics Tools, 2(2), 1997
-    __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],float V2[3],
-                        float U0[3],float U1[3],float U2[3])
+    __device__ int coplanar_tri_tri(double N[3],double V0[3],double V1[3],double V2[3],
+                        double U0[3],double U1[3],double U2[3])
     {
-    float A[3];
+    double A[3];
     short i0,i1;
     /* first project onto an axis-aligned plane, that maximizes the area */
     /* of the triangles, compute indices: i0,i1. */
@@ -556,53 +540,74 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
         return 0;
     }
 
-    bool detect_collision_all_robot_host(impl::Triangle<float> *obstacles, int obs_size,
-            impl::Triangle<float> *robot, int rob_size, Eigen::Transform<float, 3, Eigen::Isometry> tf){
+    // void detect_collision_all_robot_host(
+    //         impl::Triangle<float> *obstacles, size_t obs_size,
+    //         impl::Triangle<float> *robot, size_t rob_size,
+    //         bool *collisions, Eigen::Transform<float, 3, Eigen::Isometry> tf){
 
-        float threshold = 0.0001f;
-        for (int i = 0; i < rob_size; i++){
-            impl::Triangle<float> pre_trans_rob = robot[i];
-            impl::Triangle<float> rob(  tf * pre_trans_rob.A,
-                                        tf * pre_trans_rob.B,
-                                        tf * pre_trans_rob.C);
+    //     float threshold = 0.0001f;
 
 
-
-            float rob_center_vertex[] = {rob.A[0], rob.A[1], rob.A[2]};
-            float rob_edge_B[] =      {rob.B[0] - rob.A[0], rob.B[1] - rob.A[1], rob.B[2] - rob.A[2]};
-            float rob_edge_C[] =      {rob.C[0] - rob.A[0], rob.C[1] - rob.A[1], rob.C[2] - rob.A[2]};
-
-
-            for (size_t j = 0; j < obs_size ; j++){
-                impl::Triangle<float> obs = obstacles[j];
-                Vec3 obs_vec1 = obs.B - obs.A;
-                Vec3 obs_vec2 = obs.C - obs.A;
+    //     for (size_t idx = 0; idx < obs_size ; idx++){
+    //         impl::Triangle<float> obs = obstacles[idx];
+    //         Vec3 obs_vec1 = obs.B - obs.A;
+    //         Vec3 obs_vec2 = obs.C - obs.A;
 
 
-                Vec3 obs_norm = obs_vec1.cross(obs_vec2);
+    //         Vec3 obs_norm = obs_vec1.cross(obs_vec2);
 
-                // scalar that satisfies obs_norm * X + obs_d = 0dot
-                float obs_d = -1 * obs_norm.dot(obs.A);
+    //         // scalar that satisfies obs_norm * X + obs_d = 0dot
+    //         float obs_d = -1 * obs_norm.dot(obs.A);
 
-                // case where vertices of a 'triangle' are colinear- ignore collision
-                // todo, do line intersection test with triangle
-                if (fabsf(obs_norm[0]) < threshold && fabsf(obs_norm[1]) < threshold && fabsf(obs_norm[2]) < threshold){
-                    continue;
-                }
+    //         // case where vertices of a 'triangle' are colinear- ignore collision
+    //         // todo, do line intersection test with triangle
+    //         if (fabsf(obs_norm[0]) < threshold && fabsf(obs_norm[1]) < threshold && fabsf(obs_norm[2]) < threshold){
+    //             collisions[idx] = false;
+
+    //             return;
+    //         }
 
 
-                float obs_center_vertex[] = {obs.A[0], obs.A[1], obs.A[2]};
-                float obs_edge_B[] =      {obs.B[0] - obs.A[0], obs.B[1] - obs.A[1], obs.B[2] - obs.A[2]};
-                float obs_edge_C[] =      {obs.C[0] - obs.A[0], obs.C[1] - obs.A[1], obs.C[2] - obs.A[2]};
+    //         float obs_center_vertex[] = {obs.A[0], obs.A[1], obs.A[2]};
+    //         float obs_edge_B[] =      {obs.B[0] - obs.A[0], obs.B[1] - obs.A[1], obs.B[2] - obs.A[2]};
+    //         float obs_edge_C[] =      {obs.C[0] - obs.A[0], obs.C[1] - obs.A[1], obs.C[2] - obs.A[2]};
+    //         //test for intersection against all robot triangles
+    //         ////////////////////////////////////////////////////////////////////////
+    //         bool has_collision = false;
+    //         for (int i = 0; i < rob_size; i++){
+    //             impl::Triangle<float> pre_trans_rob = robot[i];
+    //             impl::Triangle<float> rob(  tf * pre_trans_rob.A,
+    //                                         tf * pre_trans_rob.B,
+    //                                         tf * pre_trans_rob.C);
 
-                if (tr_tri_intersect3D      (obs_center_vertex, obs_edge_B, obs_edge_C,
-                                                rob_center_vertex, rob_edge_B, rob_edge_C)){
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
+
+
+    //             float rob_center_vertex[] = {rob.A[0], rob.A[1], rob.A[2]};
+    //             float rob_edge_B[] =      {rob.B[0] - rob.A[0], rob.B[1] - rob.A[1], rob.B[2] - rob.A[2]};
+    //             float rob_edge_C[] =      {rob.C[0] - rob.A[0], rob.C[1] - rob.A[1], rob.C[2] - rob.A[2]};
+
+    //             if (tr_tri_intersect3D      (obs_center_vertex, obs_edge_B, obs_edge_C,
+    //                                         rob_center_vertex, rob_edge_B, rob_edge_C)){
+    //                 has_collision=true;
+    //                 collisions[idx] = has_collision;
+    //                 return;
+
+    //                 // printf("Robot Triangle %d: \n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \nintersects triangle\n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)}\n", i,
+    //                 //     rob_center_vertex[0], rob_center_vertex[1], rob_center_vertex[2],
+    //                 //     rob_edge_B[0], rob_edge_B[1], rob_edge_B[2],
+    //                 //     rob_edge_C[0], rob_edge_C[1], rob_edge_C[2],
+    //                 //     obs_center_vertex[0], obs_center_vertex[1], obs_center_vertex[2],
+    //                 //     obs_edge_B[0], obs_edge_B[1], obs_edge_B[2],
+    //                 //     obs_edge_C[0], obs_edge_C[1], obs_edge_C[2]);
+    //                 // break;
+    //             }
+    //         }
+    //         collisions[idx] = has_collision;
+    //     }
+
+    // }
+
+
 
     // one environment triangle vs all robot triangles
     // void detect_collision_all_robot(
@@ -620,6 +625,7 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
         if (idx >= obs_size){
             return;
         }
+
         // if (idx == 0){
             // printf("There are %d obstacle triangles", obs_size );
             // for (int i = 0; i < obs_size; i++){
@@ -652,20 +658,21 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
 
         // case where vertices of a 'triangle' are colinear- ignore collision
         // todo, do line intersection test with triangle
-        if (fabsf(obs_norm[0]) < threshold && fabsf(obs_norm[1]) < threshold && fabsf(obs_norm[2]) < threshold){
-            collisions[idx] = false;
+        // if (fabsf(obs_norm[0]) < threshold && fabsf(obs_norm[1]) < threshold && fabsf(obs_norm[2]) < threshold){
+        //     collisions[idx] = false;
 
-            return;
-        }
+        //     return;
+        // }
 
 
-        float obs_center_vertex[] = {obs.A[0], obs.A[1], obs.A[2]};
-        float obs_edge_B[] =      {obs.B[0] - obs.A[0], obs.B[1] - obs.A[1], obs.B[2] - obs.A[2]};
-        float obs_edge_C[] =      {obs.C[0] - obs.A[0], obs.C[1] - obs.A[1], obs.C[2] - obs.A[2]};
+        double obs_center_vertex[] = {obs.A[0], obs.A[1], obs.A[2]};
+        double obs_edge_B[] =      {obs.B[0] - obs.A[0], obs.B[1] - obs.A[1], obs.B[2] - obs.A[2]};
+        double obs_edge_C[] =      {obs.C[0] - obs.A[0], obs.C[1] - obs.A[1], obs.C[2] - obs.A[2]};
         //test for intersection against all robot triangles
         ////////////////////////////////////////////////////////////////////////
         bool has_collision = false;
         for (int i = 0; i < rob_size; i++){
+
             impl::Triangle<float> pre_trans_rob = robot[i];
             impl::Triangle<float> rob(  tf * pre_trans_rob.A,
                                         tf * pre_trans_rob.B,
@@ -673,14 +680,15 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
 
 
 
-            float rob_center_vertex[] = {rob.A[0], rob.A[1], rob.A[2]};
-            float rob_edge_B[] =      {rob.B[0] - rob.A[0], rob.B[1] - rob.A[1], rob.B[2] - rob.A[2]};
-            float rob_edge_C[] =      {rob.C[0] - rob.A[0], rob.C[1] - rob.A[1], rob.C[2] - rob.A[2]};
+            double rob_center_vertex[] = {rob.A[0], rob.A[1], rob.A[2]};
+            double rob_edge_B[] =      {rob.B[0] - rob.A[0], rob.B[1] - rob.A[1], rob.B[2] - rob.A[2]};
+            double rob_edge_C[] =      {rob.C[0] - rob.A[0], rob.C[1] - rob.A[1], rob.C[2] - rob.A[2]};
 
+            // printf("Result is %d", tr_tri_intersect3D      (obs_center_vertex, obs_edge_B, obs_edge_C,
+            //                              rob_center_vertex, rob_edge_B, rob_edge_C));
             if (tr_tri_intersect3D      (obs_center_vertex, obs_edge_B, obs_edge_C,
                                          rob_center_vertex, rob_edge_B, rob_edge_C)){
                 has_collision=true;
-
                 // printf("Robot Triangle %d: \n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)} \nintersects env triangle %d\n{(%f, %f, %f), (%f, %f, %f), (%f, %f, %f)}\n", i,
                 //     rob_center_vertex[0], rob_center_vertex[1], rob_center_vertex[2],
                 //     rob_edge_B[0], rob_edge_B[1], rob_edge_B[2],
@@ -755,12 +763,14 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
 
 
             Transform tf = stateToTransform(q);
-            return !detect_collision_all_robot_host( environment_->host_triangles_.data(), num_env_triangles,
-                                                    (*robot_)[0].host_triangles_.data(), num_rob_triangles, tf);
-            // cudaMalloc((void **) &d_collisions, sizeof(bool) * num_env_triangles);
 
-            // size_t block_size = 256;
-            // size_t numBlocks = num_env_triangles / block_size +1;
+            // array of booleans, d_collisions[i] = true -> environment_.triangle[i] is
+            bool host_collisions[num_env_triangles];
+            bool *d_collisions;
+            cudaMalloc((void **) &d_collisions, sizeof(bool) * num_env_triangles);
+
+            size_t block_size = 256;
+            size_t numBlocks = num_env_triangles / block_size +1;
 
 
             // for (int i = 0; i < num_rob_triangles; i++){
@@ -771,34 +781,34 @@ __device__ __host__ int coplanar_tri_tri(float N[3],float V0[3],float V1[3],floa
             //                         (*robot_)[0].host_triangles_[i].C[0], (*robot_)[0].host_triangles_[i].C[1], (*robot_)[0].host_triangles_[i].C[2]);
             // }
 
-            // cudaDeviceSynchronize();
-            // // detect_collision_all_robot_host(&(environment_->host_triangles_[0]), num_env_triangles,
-            // //                                 &((*robot_)[0].host_triangles_[0]), num_rob_triangles,
-            // //                                 host_collisions, tf);
-            // detect_collision_all_robot<<< numBlocks, 256>>>(  environment_->d_triangles_, num_env_triangles,
-            //                                         (*robot_)[0].d_triangles_, num_rob_triangles,
-            //                                         d_collisions, tf);
-            // cudaDeviceSynchronize();
+            cudaDeviceSynchronize();
+            // detect_collision_all_robot_host(&(environment_->host_triangles_[0]), num_env_triangles,
+            //                                 &((*robot_)[0].host_triangles_[0]), num_rob_triangles,
+            //                                 host_collisions, tf);
+            detect_collision_all_robot<<< numBlocks, 256>>>(  environment_->d_triangles_, num_env_triangles,
+                                                    (*robot_)[0].d_triangles_, num_rob_triangles,
+                                                    d_collisions, tf);
+            cudaDeviceSynchronize();
 
-            // cudaMemcpy(host_collisions, d_collisions, num_env_triangles * sizeof(bool), cudaMemcpyDeviceToHost);
-            // cudaDeviceSynchronize();
+            cudaMemcpy(host_collisions, d_collisions, num_env_triangles * sizeof(bool), cudaMemcpyDeviceToHost);
+            cudaDeviceSynchronize();
 
-            // bool isValid = true;
-            // for (int i = 0; i <num_env_triangles; i ++){
-            //     isValid = isValid && !host_collisions[i];
-            //     // if (host_collisions[i]){
-            //     //     int zero = 0;
-            //     //     // std::cout << "env_triangl-e " << i <<" collides\n";
-            //     // }
+            bool isValid = true;
+            for (int i = 0; i <num_env_triangles; i ++){
+                isValid = isValid && !host_collisions[i];
+                // if (host_collisions[i]){
+                //     int zero = 0;
+                //     // std::cout << "env_triangl-e " << i <<" collides\n";
+                // }
+            }
+            // std::cout << isValid << std::endl;
+            // if (isValid){
+            //     std::cout << "no collisions for state " << q << std::endl;
             // }
-            // // std::cout << isValid << std::endl;
-            // // if (isValid){
-            // //     std::cout << "no collisions for state " << q << std::endl;
-            // // }
-            // // else {
-            // //     std::cout << "there is a collision for state " << q << std::endl;
-            // // }
-            // return isValid;
+            // else {
+            //     std::cout << "there is a collision for state " << q << std::endl;
+            // }
+            return isValid;
 
 
             // TODO - write to a single global flag instead of an array of collisions
